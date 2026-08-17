@@ -114,9 +114,22 @@ if ($docCount -eq 0) {
     Warn "в $docsDir нет файлов .md/.txt — поиск по документам будет пустым"
     Warn "положите документы туда и запустите: docker compose exec kb python -m kb.doc_index /docs --source local"
 } else {
-    docker compose exec -T kb python -m kb.doc_index /docs --source local
-    if ($LASTEXITCODE -ne 0) { Fail "индексация документов не удалась" }
-    Ok "документы проиндексированы ($docCount файлов)"
+    # Каждый подкаталог — отдельный источник. Иначе одни и те же документы,
+    # разложенные по папкам, попадут в базу под одной меткой, а при повторном
+    # запуске с другой меткой продублируются. Плюс по источнику потом можно
+    # фильтровать поиск: только вики, только выгрузка Confluence
+    $subdirs = Get-ChildItem $docsDir -Directory -EA SilentlyContinue
+    if ($subdirs) {
+        foreach ($dir in $subdirs) {
+            docker compose exec -T kb python -m kb.doc_index "/docs/$($dir.Name)" --source $dir.Name
+            if ($LASTEXITCODE -ne 0) { Fail "индексация $($dir.Name) не удалась" }
+            Ok "источник $($dir.Name) проиндексирован"
+        }
+    } else {
+        docker compose exec -T kb python -m kb.doc_index /docs --source local
+        if ($LASTEXITCODE -ne 0) { Fail "индексация документов не удалась" }
+        Ok "документы проиндексированы ($docCount файлов)"
+    }
 }
 
 # ---------- 5. код ----------

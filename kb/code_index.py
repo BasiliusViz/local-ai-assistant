@@ -222,6 +222,9 @@ def point_id(chunk: dict) -> str:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    # httpx рапортует о каждом запросе; при индексации это сотни строк,
+    # среди которых теряется собственный вывод
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     ap = argparse.ArgumentParser(description="Индексация кода в Qdrant")
     ap.add_argument("root", help="каталог с репозиториями")

@@ -103,8 +103,22 @@ if [ "$docs_count" -eq 0 ]; then
     warn "в ${DOCS_DIR} нет файлов .md/.txt — поиск по документам будет пустым"
     warn "положите документы туда и запустите: docker compose exec kb python -m kb.doc_index /docs --source local"
 else
-    compose exec -T kb python -m kb.doc_index /docs --source local || fail "индексация документов не удалась"
-    ok "документы проиндексированы ($docs_count файлов)"
+    # Каждый подкаталог — отдельный источник. Иначе одни и те же документы,
+    # разложенные по папкам, попадут под одной меткой, а при повторном запуске
+    # с другой меткой продублируются. Плюс по источнику можно фильтровать поиск
+    subdirs=$(find "${DOCS_DIR}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+    if [ -n "$subdirs" ]; then
+        for dir in $subdirs; do
+            name=$(basename "$dir")
+            compose exec -T kb python -m kb.doc_index "/docs/$name" --source "$name" \
+                || fail "индексация $name не удалась"
+            ok "источник $name проиндексирован"
+        done
+    else
+        compose exec -T kb python -m kb.doc_index /docs --source local \
+            || fail "индексация документов не удалась"
+        ok "документы проиндексированы ($docs_count файлов)"
+    fi
 fi
 
 # ---------- 5. код ----------
