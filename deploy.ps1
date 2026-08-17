@@ -53,15 +53,27 @@ foreach ($key in @("MODELS_DIR", "QDRANT_DIR", "CODE_DIR", "DOCS_DIR")) {
 }
 Ok "каталоги данных готовы"
 
-# GPU не обязателен, но без него ответы идут минутами вместо секунд
-$gpu = docker info 2>$null | Select-String -Pattern "nvidia" -Quiet
-if ($gpu) { Ok "GPU виден Docker" }
-else { Warn "GPU не виден Docker. На процессоре модели работают в десятки раз медленнее" }
+# Где живёт модель. Если Ollama внешняя, этой машине GPU не нужен вовсе:
+# qdrant, kb и code-graph — обычные приложения на процессоре
+$ollamaUrl = if ($cfg.OLLAMA_URL) { $cfg.OLLAMA_URL } else { "http://localhost:$ollamaPort/v1" }
+$ollamaBase = $ollamaUrl -replace "/v1/?$", ""
+$ollamaLocal = $ollamaBase -match "localhost|127\.0\.0\.1|//ollama"
+
+if ($ollamaLocal) {
+    Ok "Ollama локальная — будет поднята здесь"
+    $gpu = docker info 2>$null | Select-String -Pattern "nvidia" -Quiet
+    if ($gpu) { Ok "GPU виден Docker" }
+    else { Warn "GPU не виден Docker. На процессоре модели работают в десятки раз медленнее" }
+} else {
+    Ok "Ollama внешняя: $ollamaBase (GPU на этой машине не нужен)"
+}
 
 # ---------- 2. контейнеры ----------
 Step "2/6. Запуск контейнеров"
 
-docker compose up -d --build
+# Профиль local-llm поднимает Ollama здесь же. Если она внешняя — не трогаем
+if ($ollamaLocal) { docker compose --profile local-llm up -d --build }
+else { docker compose up -d --build }
 if ($LASTEXITCODE -ne 0) { Fail "не удалось поднять стек. Смотрите: docker compose logs" }
 Ok "контейнеры запущены"
 
@@ -69,34 +81,50 @@ Write-Host "  ожидание готовности сервисов..."
 $ready = $false
 foreach ($i in 1..60) {
     $q = curl.exe -s -o NUL -w "%{http_code}" "http://localhost:$qdrantPort/readyz" 2>$null
-    $o = curl.exe -s -o NUL -w "%{http_code}" "http://localhost:$ollamaPort/api/tags" 2>$null
-    if ($q -eq "200" -and $o -eq "200") { $ready = $true; break }
+    if ($q -eq "200") { $ready = $true; break }
     Start-Sleep -Seconds 3
 }
-if (-not $ready) { Fail "Qdrant или Ollama не поднялись за 3 минуты. Смотрите: docker compose logs" }
-Ok "Qdrant и Ollama отвечают"
+if (-not $ready) { Fail "Qdrant не поднялся за 3 минуты. Смотрите: docker compose logs qdrant" }
+Ok "Qdrant отвечает"
 
 # ---------- 3. модели ----------
 Step "3/6. Модели"
 
-$installed = docker exec ollama ollama list 2>$null
+# Заголовки авторизации: внешняя Ollama обычно за шлюзом с токеном
+$headers = @{}
+if ($cfg.OLLAMA_API_KEY) {
+    $hdr = if ($cfg.OLLAMA_AUTH_HEADER) { $cfg.OLLAMA_AUTH_HEADER } else { "Authorization" }
+    $pfx = if ($null -ne $cfg.OLLAMA_AUTH_PREFIX) { $cfg.OLLAMA_AUTH_PREFIX } else { "Bearer " }
+    $headers[$hdr] = "$pfx$($cfg.OLLAMA_API_KEY)"
+}
+
+try {
+    $tags = Invoke-RestMethod -Uri "$ollamaBase/api/tags" -Headers $headers -TimeoutSec 60
+    $installed = $tags.models.name -join " "
+} catch {
+    Fail "Ollama недоступна по адресу $ollamaBase : $($_.Exception.Message)"
+}
+
 foreach ($model in @($genModel, $embedModel)) {
     $short = ($model -split ":")[0]
     if ($installed -match [regex]::Escape($short)) {
-        Ok "$model уже загружена"
-    } else {
+        Ok "$model на месте"
+    } elseif ($ollamaLocal) {
         Write-Host "  скачивание $model (это может занять минуты)..."
         docker exec ollama ollama pull $model
         if ($LASTEXITCODE -ne 0) { Fail "не удалось скачать $model" }
         Ok "$model загружена"
+    } else {
+        # На чужую машину модель не скачать — только попросить владельца
+        Fail "$model нет на сервере $ollamaBase. Загрузите её там: ollama pull $model"
     }
 }
 
 # Размерность вектора обязана совпасть с коллекцией, иначе поиск молча врёт
 try {
     $body = [Text.Encoding]::UTF8.GetBytes("{`"model`":`"$embedModel`",`"input`":[`"проверка`"]}")
-    $resp = Invoke-RestMethod -Method Post -Uri "http://localhost:$ollamaPort/v1/embeddings" `
-        -ContentType "application/json" -Body $body -TimeoutSec 600
+    $resp = Invoke-RestMethod -Method Post -Uri "$ollamaBase/v1/embeddings" `
+        -ContentType "application/json" -Headers $headers -Body $body -TimeoutSec 600
     Ok "эмбеддер отвечает, размерность вектора: $($resp.data[0].embedding.Count)"
 } catch {
     Fail "эмбеддер не вернул вектор: $($_.Exception.Message)"

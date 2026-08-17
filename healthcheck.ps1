@@ -27,8 +27,16 @@ $graphPort  = if ($cfg.CODE_GRAPH_PORT) { $cfg.CODE_GRAPH_PORT } else { "8011" }
 $genModel   = if ($cfg.GEN_MODEL) { $cfg.GEN_MODEL } else { "qwen3:8b" }
 $embedModel = if ($cfg.EMBED_MODEL) { $cfg.EMBED_MODEL } else { "bge-m3" }
 
+# Ollama бывает внешней (на машине с GPU) — тогда её контейнера здесь нет,
+# и это нормально. Определяем по адресу из .env
+$ollamaUrl = if ($cfg.OLLAMA_URL) { $cfg.OLLAMA_URL } else { "http://localhost:$ollamaPort/v1" }
+$ollamaBase = $ollamaUrl -replace "/v1/?$", ""
+$ollamaLocal = $ollamaBase -match "localhost|127\.0\.0\.1|//ollama"
+
 Write-Host "=== Контейнеры ==="
-foreach ($name in @("ollama", "qdrant", "kb", "code-graph")) {
+$expected = @("qdrant", "kb", "code-graph")
+if ($ollamaLocal) { $expected = @("ollama") + $expected }
+foreach ($name in $expected) {
     $state = docker inspect -f "{{.State.Status}}" $name 2>$null
     if ($LASTEXITCODE -ne 0) { Bad "$name не создан" }
     elseif ($state -eq "running") { Ok "$name работает" }
@@ -37,27 +45,45 @@ foreach ($name in @("ollama", "qdrant", "kb", "code-graph")) {
 
 Write-Host ""
 Write-Host "=== Сервисы ==="
-$code = curl.exe -s -o NUL -w "%{http_code}" "http://localhost:$ollamaPort/api/tags" 2>$null
-if ($code -eq "200") { Ok "Ollama :$ollamaPort" } else { Bad "Ollama :$ollamaPort отвечает $code" }
-
 $code = curl.exe -s -o NUL -w "%{http_code}" "http://localhost:$qdrantPort/readyz" 2>$null
 if ($code -eq "200") { Ok "Qdrant :$qdrantPort" } else { Bad "Qdrant :$qdrantPort отвечает $code" }
 
+# Модели проверяем ПО СЕТИ, а не через docker exec: контейнера может не быть
+$headers = @{}
+if ($cfg.OLLAMA_API_KEY) {
+    $hdr = if ($cfg.OLLAMA_AUTH_HEADER) { $cfg.OLLAMA_AUTH_HEADER } else { "Authorization" }
+    $pfx = if ($null -ne $cfg.OLLAMA_AUTH_PREFIX) { $cfg.OLLAMA_AUTH_PREFIX } else { "Bearer " }
+    $headers[$hdr] = "$pfx$($cfg.OLLAMA_API_KEY)"
+}
+
+$where = if ($ollamaLocal) { "локальная" } else { "внешняя" }
+try {
+    $tags = Invoke-RestMethod -Uri "$ollamaBase/api/tags" -Headers $headers -TimeoutSec 30
+    Ok "Ollama ($where): $ollamaBase"
+    $names = $tags.models.name -join " "
+} catch {
+    Bad "Ollama ($where) недоступна по адресу $ollamaBase : $($_.Exception.Message)"
+    $names = ""
+}
+
 Write-Host ""
 Write-Host "=== Модели ==="
-$installed = docker exec ollama ollama list 2>$null
 foreach ($model in @($genModel, $embedModel)) {
     $short = ($model -split ":")[0]
-    if ($installed -match [regex]::Escape($short)) { Ok $model }
-    else { Bad "$model не загружена (docker exec ollama ollama pull $model)" }
+    if ($names -match [regex]::Escape($short)) { Ok $model }
+    elseif ($names) { Bad "$model не найдена на сервере Ollama" }
+    else { Bad "$model — не удалось получить список моделей" }
 }
 
 # Обе модели должны помещаться в память ОДНОВРЕМЕННО, иначе каждый запрос
-# оплачивает перезагрузку с диска — самая частая причина «всё тормозит»
-$loadedRaw = docker exec ollama ollama ps 2>$null
-$loaded = ($loadedRaw | Select-Object -Skip 1 | Where-Object { $_.Trim() }).Count
-if ($loaded -ge 2) { Ok "в памяти моделей: $loaded" }
-else { Warn "в памяти моделей: $loaded. После простоя это нормально; если так во время работы — проверьте OLLAMA_MAX_LOADED_MODELS и объём видеопамяти" }
+# оплачивает перезагрузку с диска — самая частая причина «всё тормозит».
+# Проверяем только у локальной: на чужой машине это не наша забота
+if ($ollamaLocal) {
+    $loadedRaw = docker exec ollama ollama ps 2>$null
+    $loaded = ($loadedRaw | Select-Object -Skip 1 | Where-Object { $_.Trim() }).Count
+    if ($loaded -ge 2) { Ok "в памяти моделей: $loaded" }
+    else { Warn "в памяти моделей: $loaded. После простоя это нормально; если так во время работы — проверьте OLLAMA_MAX_LOADED_MODELS и объём видеопамяти" }
+}
 
 Write-Host ""
 Write-Host "=== Данные ==="

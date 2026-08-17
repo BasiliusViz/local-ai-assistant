@@ -8,10 +8,15 @@
 #   docker compose --profile quality up -d   + реранкер (обычно не нужен)
 
 services:
-  # Один сервис Ollama на всё: генеративная модель + эмбеддер.
+  # Ollama НЕ поднимается по умолчанию: обычно она уже развёрнута отдельно,
+  # на машине с видеокартой, и указывается через OLLAMA_URL в .env.
+  #
+  # Поднять локально (нужен GPU):  docker compose --profile local-llm up -d
+  #
   # Модели лежат на хосте, вне контейнера — пересоздание контейнера
   # не приводит к повторной загрузке 16 ГБ.
   ollama:
+    profiles: ["local-llm"]
     image: ollama/ollama:latest
     container_name: ollama
     restart: unless-stopped
@@ -86,7 +91,7 @@ services:
       - KB_OLLAMA_AUTH_HEADER=${OLLAMA_AUTH_HEADER:-Authorization}
       - KB_OLLAMA_AUTH_PREFIX=${OLLAMA_AUTH_PREFIX:-Bearer }
     depends_on:
-      - ollama
+      # Только Qdrant: Ollama обычно внешняя, и ждать её контейнер бессмысленно
       - qdrant
 
   # Граф кода: git -> Graphify -> MCP на :8011.
