@@ -14,6 +14,14 @@ Confluence API  ->  sync.py  ->  markdown-файлы  ->  index-files.ps1  ->  Q
 
 ## Порядок запуска
 
+**0. Поставить зависимость**
+
+```bash
+pip install -r confluence/requirements.txt
+```
+
+Нужен только `requests`. Конвертер разметки обходится стандартной библиотекой.
+
 **1. Настроить доступ**
 
 ```bash
@@ -21,7 +29,18 @@ cp .env.example .env
 ```
 
 Заполнить `CONFLUENCE_URL` и `CONFLUENCE_TOKEN`. Токен создаётся в Confluence:
-профиль → Personal Access Tokens. Это не пароль.
+профиль → Personal Access Tokens. Это не пароль. Уходит заголовком
+`Authorization: Bearer` — так его ждёт Server и Data Center.
+
+**Что выгружать — два способа:**
+
+- `CONFLUENCE_PAGES=123456,789012` — корневые страницы. Забирается сама
+  страница и **всё поддерево под ней на любой глубине**. Идентификатор виден
+  в адресе: `.../pages/viewpage.action?pageId=123456`
+- `CONFLUENCE_SPACES=DEV,OPS` — спейсы целиком, если `CONFLUENCE_PAGES` пуста
+
+Поддеревья точнее: в спейсе обычно лежит много лишнего — черновики, архив,
+чужие эксперименты. Всё это попадёт в поиск и будет мешать.
 
 **2. Проверить связь — прежде чем что-либо качать**
 

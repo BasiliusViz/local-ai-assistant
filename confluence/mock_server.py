@@ -78,11 +78,39 @@ PAGES = [
         "space": "OPS",
         "title": "Дежурство",
         "updated": "2026-08-01T09:00:00.000+03:00",
+        # Вложена в «Регламент выкатки»: проверяем выгрузку поддерева
+        "parent": "1002",
         "body": """<p>Дежурная смена DevOps: канал <code>#devops-duty</code>.</p>
 <p>Время реакции на инцидент P1 &mdash; 15 минут в рабочее время,
 30 минут ночью.</p>""",
     },
+    {
+        "id": "1004",
+        "space": "OPS",
+        "title": "Эскалация инцидентов",
+        "updated": "2026-08-02T11:00:00.000+03:00",
+        # Второй уровень вложенности: под «Дежурством»
+        "parent": "1003",
+        "body": """<h2>Порядок эскалации</h2>
+<ol>
+  <li>дежурный DevOps &mdash; 15 минут</li>
+  <li>владелец сервиса &mdash; ещё 15 минут</li>
+  <li>руководитель направления</li>
+</ol>""",
+    },
 ]
+
+
+def descendants_of(root_id: str) -> list[dict]:
+    """Все потомки на любой глубине — как CQL ancestor в настоящем Confluence."""
+    out, frontier = [], [root_id]
+    while frontier:
+        current = frontier.pop()
+        for page in PAGES:
+            if page.get("parent") == current:
+                out.append(page)
+                frontier.append(page["id"])
+    return out
 
 
 def page_json(page: dict, with_body: bool) -> dict:
@@ -123,6 +151,24 @@ class Handler(BaseHTTPRequestHandler):
 
         if url.path == "/rest/api/space":
             self._send(200, {"results": [{"key": s["key"], "name": s["name"]} for s in SPACES], "size": len(SPACES)})
+            return
+
+        # поиск по CQL: нас интересует только ancestor=<id>
+        if url.path == "/rest/api/content/search":
+            cql = query.get("cql", [""])[0]
+            start = int(query.get("start", ["0"])[0])
+            limit = int(query.get("limit", ["25"])[0])
+            expand = query.get("expand", [""])[0]
+
+            m = re.search(r"ancestor\s*=\s*(\d+)", cql)
+            items = descendants_of(m.group(1)) if m else []
+            window = items[start : start + limit]
+            self._send(200, {
+                "results": [page_json(p, "body" in expand) for p in window],
+                "start": start,
+                "limit": limit,
+                "size": len(window),
+            })
             return
 
         # одна страница по id

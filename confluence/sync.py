@@ -28,11 +28,12 @@ import json
 import os
 import re
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
 from datetime import datetime
 from pathlib import Path
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 sys.path.insert(0, str(Path(__file__).parent))
 from storage_to_md import convert  # noqa: E402
@@ -59,57 +60,87 @@ class ConfluenceError(RuntimeError):
 
 
 class Client:
+    """HTTP-клиент Confluence.
+
+    Токен уходит заголовком `Authorization: Bearer <token>` — так его ждёт
+    Confluence Server и Data Center. У Cloud схема другая (почта + токен через
+    Basic auth), она здесь не реализована.
+    """
+
     def __init__(self, base_url: str, token: str, timeout: int = 60):
         self.base = base_url.rstrip("/")
-        self.token = token
         self.timeout = timeout
         self.last_raw: str = ""
 
-    def get(self, path: str, **params) -> dict:
-        url = f"{self.base}{path}"
-        if params:
-            url += "?" + urllib.parse.urlencode(
-                {k: v for k, v in params.items() if v is not None}
-            )
+        self.session = requests.Session()
+        self.session.headers.update(
+            {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        )
+        # Повторы на сетевых сбоях и 5xx: при выгрузке тысячи страниц одна
+        # случайная ошибка не должна ронять весь прогон. 4xx не повторяем -
+        # неверный токен или путь от повтора не исправится
+        retry = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("GET",),
+        )
+        self.session.mount("https://", HTTPAdapter(max_retries=retry))
+        self.session.mount("http://", HTTPAdapter(max_retries=retry))
 
-        req = urllib.request.Request(url)
-        req.add_header("Authorization", f"Bearer {self.token}")
-        req.add_header("Accept", "application/json")
+    def get(self, path: str, **params) -> dict:
+        clean = {k: v for k, v in params.items() if v is not None}
 
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                self.last_raw = resp.read().decode("utf-8", errors="replace")
-                return json.loads(self.last_raw)
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="replace")[:300]
-            if e.code == 401:
-                raise ConfluenceError(
-                    "401: токен не принят.\n"
-                    "  - Confluence Server/DC ждёт Personal Access Token в "
-                    "заголовке Bearer (Profile -> Personal Access Tokens)\n"
-                    "  - если у вас Confluence Cloud, там другая схема: "
-                    "email + API-токен через Basic auth, этот скрипт её не умеет"
-                ) from e
-            if e.code == 403:
-                raise ConfluenceError(
-                    "403: доступ запрещён. Токен рабочий, но у пользователя нет "
-                    "прав на этот спейс, либо администратор ограничил REST API"
-                ) from e
-            if e.code == 404:
-                raise ConfluenceError(
-                    f"404: путь {path} не найден.\n"
-                    "  - проверьте URL: у Confluence часто есть префикс, "
-                    "например https://host/confluence\n"
-                    "  - в Cloud путь другой: /wiki/rest/api/..."
-                ) from e
-            raise ConfluenceError(f"HTTP {e.code}: {body}") from e
-        except urllib.error.URLError as e:
+            resp = self.session.get(
+                f"{self.base}{path}", params=clean, timeout=self.timeout
+            )
+        except requests.exceptions.SSLError as e:
             raise ConfluenceError(
-                f"Не удалось соединиться с {self.base}: {e.reason}\n"
+                f"Ошибка TLS при обращении к {self.base}: {e}\n"
+                "  - во внутреннем контуре часто самоподписанный сертификат\n"
+                "  - добавьте корневой сертификат компании в доверенные либо\n"
+                "    укажите путь к нему в REQUESTS_CA_BUNDLE"
+            ) from e
+        except requests.exceptions.ConnectionError as e:
+            raise ConfluenceError(
+                f"Не удалось соединиться с {self.base}: {e}\n"
                 "  - проверьте, что адрес доступен с этой машины (ping, curl)\n"
                 "  - если сеть за прокси, задайте HTTPS_PROXY"
             ) from e
-        except json.JSONDecodeError as e:
+        except requests.exceptions.Timeout as e:
+            raise ConfluenceError(
+                f"Таймаут {self.timeout} с при запросе {path}. "
+                "Confluence отвечает медленно или недоступен"
+            ) from e
+
+        if resp.status_code == 401:
+            raise ConfluenceError(
+                "401: токен не принят.\n"
+                "  - Confluence Server/DC ждёт Personal Access Token в "
+                "заголовке Bearer (профиль -> Personal Access Tokens)\n"
+                "  - если у вас Confluence Cloud, там другая схема: "
+                "email + API-токен через Basic auth, этот скрипт её не умеет"
+            )
+        if resp.status_code == 403:
+            raise ConfluenceError(
+                "403: доступ запрещён. Токен рабочий, но у пользователя нет "
+                "прав на этот спейс, либо администратор ограничил REST API"
+            )
+        if resp.status_code == 404:
+            raise ConfluenceError(
+                f"404: путь {path} не найден.\n"
+                "  - проверьте URL: у Confluence часто есть префикс, "
+                "например https://host/confluence\n"
+                "  - в Cloud путь другой: /wiki/rest/api/..."
+            )
+        if not resp.ok:
+            raise ConfluenceError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+
+        self.last_raw = resp.text
+        try:
+            return resp.json()
+        except ValueError as e:
             raise ConfluenceError(
                 "Ответ не является JSON. Обычно это страница логина: "
                 "значит запрос ушёл неаутентифицированным или URL ведёт не в API"
@@ -124,6 +155,34 @@ class Client:
             if len(results) < 50:
                 return out
             start += 50
+
+    def page(self, page_id: str, with_body: bool = True) -> dict:
+        return self.get(
+            f"/rest/api/content/{page_id}",
+            expand="body.storage,version,space" if with_body else "version,space",
+        )
+
+    def descendants(self, page_id: str, with_body: bool, page_size: int = 25):
+        """Все страницы под указанной, на любой глубине.
+
+        CQL `ancestor` даёт именно поддерево, а не только прямых потомков —
+        то есть один идентификатор раздела забирает весь его материал.
+        """
+        start = 0
+        while True:
+            data = self.get(
+                "/rest/api/content/search",
+                cql=f"ancestor={page_id} and type=page",
+                expand="body.storage,version,space" if with_body else "version,space",
+                start=start,
+                limit=page_size,
+            )
+            results = data.get("results", [])
+            for item in results:
+                yield item
+            if len(results) < page_size:
+                return
+            start += page_size
 
     def pages(self, space: str | None, with_body: bool, page_size: int = 25):
         """Все страницы спейса, с постраничной выборкой."""
@@ -177,6 +236,7 @@ def main() -> int:
     token = os.getenv("CONFLUENCE_TOKEN", "").strip()
     out_dir = Path(os.getenv("CONFLUENCE_OUT", str(HERE / "pages")))
     spaces_env = os.getenv("CONFLUENCE_SPACES", "").strip()
+    pages_env = os.getenv("CONFLUENCE_PAGES", "").strip()
 
     if not url or not token:
         print("Не заданы CONFLUENCE_URL и CONFLUENCE_TOKEN.")
@@ -199,27 +259,50 @@ def main() -> int:
     if len(available) > 20:
         print(f"    ... и ещё {len(available) - 20}")
 
-    wanted = [s.strip() for s in spaces_env.split(",") if s.strip()]
-    if wanted:
-        known = {s.get("key") for s in available}
-        missing = [s for s in wanted if s not in known]
-        if missing:
-            print(f"\nСпейсы не найдены или недоступны: {', '.join(missing)}")
-            return 1
-        targets = wanted
-    else:
-        targets = [s.get("key") for s in available]
+    # Два режима. CONFLUENCE_PAGES важнее: раздел точнее спейса, в котором
+    # обычно лежит много лишнего — черновики, архив, чужие эксперименты.
+    roots = [p.strip() for p in pages_env.split(",") if p.strip()]
+    targets: list[str] = []
 
-    print(f"\nБудут обработаны: {', '.join(targets)}")
+    if roots:
+        print(f"\nРежим: поддеревья страниц ({', '.join(roots)})")
+        for page_id in roots:
+            try:
+                info = client.page(page_id, with_body=False)
+                print(f"    {page_id:10} «{info.get('title')}» "
+                      f"(спейс {info.get('space', {}).get('key')})")
+            except ConfluenceError as e:
+                print(f"    {page_id:10} недоступна: {e}")
+                return 1
+    else:
+        wanted = [s.strip() for s in spaces_env.split(",") if s.strip()]
+        if wanted:
+            known = {s.get("key") for s in available}
+            missing = [s for s in wanted if s not in known]
+            if missing:
+                print(f"\nСпейсы не найдены или недоступны: {', '.join(missing)}")
+                return 1
+            targets = wanted
+        else:
+            targets = [s.get("key") for s in available]
+        print(f"\nРежим: спейсы целиком ({', '.join(targets)})")
 
     if args.check:
-        # считаем страницы, тела не тянем - быстро
-        for space in targets:
-            try:
-                count = sum(1 for _ in client.pages(space, with_body=False))
-                print(f"    {space:12} страниц: {count}")
-            except ConfluenceError as e:
-                print(f"    {space:12} ошибка: {e}")
+        if roots:
+            for page_id in roots:
+                try:
+                    count = sum(1 for _ in client.descendants(page_id, with_body=False))
+                    # сама корневая страница тоже выгружается
+                    print(f"    {page_id:10} страниц в поддереве: {count + 1}")
+                except ConfluenceError as e:
+                    print(f"    {page_id:10} ошибка: {e}")
+        else:
+            for space in targets:
+                try:
+                    count = sum(1 for _ in client.pages(space, with_body=False))
+                    print(f"    {space:12} страниц: {count}")
+                except ConfluenceError as e:
+                    print(f"    {space:12} ошибка: {e}")
         return 0
 
     state = {} if args.full else load_state()
@@ -227,51 +310,69 @@ def main() -> int:
     stats = {"новых": 0, "обновлено": 0, "без изменений": 0, "ошибок": 0}
     processed = 0
 
-    for space in targets:
-        for page in client.pages(space, with_body=True):
-            if args.limit and processed >= args.limit:
-                break
-            processed += 1
+    def source_pages():
+        """Страницы к выгрузке: поддеревья либо спейсы целиком."""
+        if roots:
+            for root_id in roots:
+                # Корневая страница тоже нужна: в CQL ancestor её нет
+                yield client.page(root_id, with_body=True)
+                yield from client.descendants(root_id, with_body=True)
+        else:
+            for space_key in targets:
+                yield from client.pages(space_key, with_body=True)
 
-            page_id = str(page.get("id"))
-            title = page.get("title", "")
-            version = page.get("version", {})
-            updated = version.get("when", "")
+    seen_ids: set[str] = set()
 
-            if args.dump_raw and processed == 1:
-                Path(args.dump_raw).write_text(client.last_raw, encoding="utf-8")
-                print(f"\nСырой ответ сохранён: {args.dump_raw}")
+    for page in source_pages():
+        if args.limit and processed >= args.limit:
+            break
 
-            previous = state.get(page_id)
-            if previous and previous.get("updated") == updated:
-                stats["без изменений"] += 1
-                continue
+        page_id = str(page.get("id"))
+        # Поддеревья могут пересекаться, если указать вложенные разделы
+        if page_id in seen_ids:
+            continue
+        seen_ids.add(page_id)
+        processed += 1
 
-            storage = (page.get("body", {}).get("storage", {}) or {}).get("value", "")
-            try:
-                md = convert(storage, title)
-            except Exception as e:  # конвертер не должен ронять выгрузку
-                print(f"  [!] {space}/{title}: ошибка конвертации ({e})")
-                stats["ошибок"] += 1
-                continue
+        space = page.get("space", {}).get("key", "unknown")
+        title = page.get("title", "")
+        version = page.get("version", {})
+        updated = version.get("when", "")
 
-            target = out_dir / space / f"{safe_name(title)}.md"
-            action = "обновлено" if previous else "новых"
-            stats[action] += 1
+        if args.dump_raw and processed == 1:
+            Path(args.dump_raw).write_text(client.last_raw, encoding="utf-8")
+            print(f"\nСырой ответ сохранён: {args.dump_raw}")
 
-            if args.dry_run:
-                print(f"  [{action:9}] {target.relative_to(out_dir.parent)} "
-                      f"({len(md)} символов)")
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(md, encoding="utf-8")
+        previous = state.get(page_id)
+        if previous and previous.get("updated") == updated:
+            stats["без изменений"] += 1
+            continue
 
-            new_state[page_id] = {
-                "updated": updated,
-                "title": title,
-                "space": space,
-                "file": str(target),
-            }
+        storage = (page.get("body", {}).get("storage", {}) or {}).get("value", "")
+        try:
+            md = convert(storage, title)
+        except Exception as e:  # конвертер не должен ронять выгрузку
+            print(f"  [!] {space}/{title}: ошибка конвертации ({e})")
+            stats["ошибок"] += 1
+            continue
+
+        target = out_dir / space / f"{safe_name(title)}.md"
+        action = "обновлено" if previous else "новых"
+        stats[action] += 1
+
+        if args.dry_run:
+            print(f"  [{action:9}] {target.relative_to(out_dir.parent)} "
+                  f"({len(md)} символов)")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(md, encoding="utf-8")
+
+        new_state[page_id] = {
+            "updated": updated,
+            "title": title,
+            "space": space,
+            "file": str(target),
+        }
 
     print("\nИтог:")
     for key, value in stats.items():

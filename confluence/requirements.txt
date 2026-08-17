@@ -1,0 +1,6 @@
+# Выгрузка Confluence. Ставится там, откуда есть доступ к вики:
+#     pip install -r confluence/requirements.txt
+#
+# Конвертер разметки (storage_to_md.py) зависимостей не имеет вовсе —
+# только стандартная библиотека.
+requests>=2.31
