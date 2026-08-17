@@ -71,9 +71,12 @@ if ($ollamaLocal) {
 # ---------- 2. контейнеры ----------
 Step "2/6. Запуск контейнеров"
 
-# Профиль local-llm поднимает Ollama здесь же. Если она внешняя — не трогаем
-if ($ollamaLocal) { docker compose --profile local-llm up -d --build }
-else { docker compose up -d --build }
+# Локальная Ollama живёт в отдельном файле: в проде её нет, модель внешняя
+if ($ollamaLocal) {
+    docker compose -f docker-compose.yml -f docker-compose.local-llm.yml up -d --build
+} else {
+    docker compose up -d --build
+}
 if ($LASTEXITCODE -ne 0) { Fail "не удалось поднять стек. Смотрите: docker compose logs" }
 Ok "контейнеры запущены"
 

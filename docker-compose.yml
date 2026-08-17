@@ -1,55 +1,19 @@
 # Локальный ИИ-ассистент в закрытом контуре.
 #
+# Ollama здесь НЕТ намеренно: модель живёт на отдельной машине с видеокартой,
+# её адрес задаётся в OLLAMA_URL. Этому стеку GPU не нужен - qdrant, kb и
+# code-graph считают на процессоре.
+# Для локальных проверок Ollama поднимается отдельным файлом:
+#   docker compose -f docker-compose.yml -f docker-compose.local-llm.yml up -d
+#
 # Все пути и порты - через переменные из .env, поэтому стек одинаково едет
 # на Windows (D:\...) и на Linux (/srv/local-ai/...). Значения по умолчанию
 # рассчитаны на Linux; для Windows задайте пути в .env.
 #
-#   docker compose up -d              поднять
+#   docker compose up -d                     поднять
 #   docker compose --profile quality up -d   + реранкер (обычно не нужен)
 
 services:
-  # Ollama НЕ поднимается по умолчанию: обычно она уже развёрнута отдельно,
-  # на машине с видеокартой, и указывается через OLLAMA_URL в .env.
-  #
-  # Поднять локально (нужен GPU):  docker compose --profile local-llm up -d
-  #
-  # Модели лежат на хосте, вне контейнера — пересоздание контейнера
-  # не приводит к повторной загрузке 16 ГБ.
-  ollama:
-    profiles: ["local-llm"]
-    image: ollama/ollama:latest
-    container_name: ollama
-    restart: unless-stopped
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
-    volumes:
-      - ${MODELS_DIR:-./data/ollama}:/root/.ollama
-    environment:
-      # ЕДИНЫЙ размер контекста для всех моделей. Ollama считает разные
-      # размеры контекста РАЗНЫМИ экземплярами: прогрев на 32K плюс запрос
-      # приложения на 8K = два экземпляра одной модели в видеопамяти. Они не
-      # помещаются, начинается вытеснение, и запрос ждёт 18-77 секунд
-      # загрузки с диска. Для RAG 8192 хватает: 5 фрагментов ≈ 2-3 тыс. токенов
-      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-8192}
-      # Модели выгружаются после простоя. При 15m первый запрос после обеда
-      # ждал 77 секунд, и MCP-клиент отваливался по таймауту
-      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-2h}
-      # Держать генеративную модель и эмбеддер в памяти ОДНОВРЕМЕННО: поиск
-      # дёргает обе подряд, и без этого каждый запрос платит за перезагрузку
-      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-2}
-      # 1 слот: иначе Ollama умножает выделение KV-кэша на число слотов
-      - OLLAMA_NUM_PARALLEL=1
-      # Экономия видеопамяти на KV-кэше, примерно вдвое
-      - OLLAMA_FLASH_ATTENTION=1
-      - OLLAMA_KV_CACHE_TYPE=q8_0
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
