@@ -80,6 +80,7 @@ def expand(query: str) -> list[str]:
                 # разнообразие уже обеспечено тремя вариантами запроса
                 "temperature": 0,
             },
+            headers=config.auth_headers(),
             timeout=config.EXPAND_TIMEOUT,
         )
         resp.raise_for_status()

@@ -8,6 +8,22 @@ OLLAMA_URL = os.getenv("KB_OLLAMA_URL", "http://localhost:11434/v1")
 EMBED_MODEL = os.getenv("KB_EMBED_MODEL", "bge-m3")
 EMBED_DIM = 1024
 
+# Ключ доступа к Ollama. У самой Ollama аутентификации нет, но в проде она
+# обычно стоит за прокси или за OpenAI-совместимым шлюзом (vLLM, LiteLLM),
+# который ключ требует. Пусто - заголовок не отправляется вовсе.
+OLLAMA_API_KEY = os.getenv("KB_OLLAMA_API_KEY", "").strip()
+# Разные шлюзы ждут ключ по-разному: Bearer - стандарт OpenAI-совместимых,
+# x-api-key встречается у прокси-серверов
+OLLAMA_AUTH_HEADER = os.getenv("KB_OLLAMA_AUTH_HEADER", "Authorization").strip()
+OLLAMA_AUTH_PREFIX = os.getenv("KB_OLLAMA_AUTH_PREFIX", "Bearer ")
+
+
+def auth_headers() -> dict[str, str]:
+    """Заголовки авторизации к Ollama. Пустой словарь, если ключа нет."""
+    if not OLLAMA_API_KEY:
+        return {}
+    return {OLLAMA_AUTH_HEADER: f"{OLLAMA_AUTH_PREFIX}{OLLAMA_API_KEY}"}
+
 # Qdrant
 QDRANT_URL = os.getenv("KB_QDRANT_URL", "http://localhost:6333")
 COLLECTION = os.getenv("KB_COLLECTION", "knowledge")

@@ -79,6 +79,12 @@ services:
       - KB_MIN_SCORE=${KB_MIN_SCORE:-0.48}
       - KB_EXPAND_MODEL=${GEN_MODEL:-qwen3:8b}
       - KB_EMBED_MODEL=${EMBED_MODEL:-bge-m3}
+      # Адрес и ключ доступа к Ollama. По умолчанию — соседний контейнер без
+      # ключа. В проде Ollama обычно за прокси или шлюзом, который требует токен
+      - KB_OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434/v1}
+      - KB_OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
+      - KB_OLLAMA_AUTH_HEADER=${OLLAMA_AUTH_HEADER:-Authorization}
+      - KB_OLLAMA_AUTH_PREFIX=${OLLAMA_AUTH_PREFIX:-Bearer }
     depends_on:
       - ollama
       - qdrant

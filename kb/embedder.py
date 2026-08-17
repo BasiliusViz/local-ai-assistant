@@ -27,8 +27,15 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
         resp = httpx.post(
             f"{config.OLLAMA_URL}/embeddings",
             json={"model": config.EMBED_MODEL, "input": texts},
+            headers=config.auth_headers(),
             timeout=config.HTTP_TIMEOUT,
         )
+        if resp.status_code in (401, 403):
+            raise EmbedError(
+                f"{resp.status_code}: доступ к {config.OLLAMA_URL} не разрешён. "
+                "Задайте KB_OLLAMA_API_KEY; если шлюз ждёт ключ в другом "
+                "заголовке — KB_OLLAMA_AUTH_HEADER и KB_OLLAMA_AUTH_PREFIX"
+            )
         resp.raise_for_status()
     except httpx.HTTPError as e:
         raise EmbedError(
