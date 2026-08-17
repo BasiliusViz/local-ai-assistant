@@ -1,0 +1,11 @@
+# Скрипты для Linux — строго LF. С CRLF bash не запустит файл вовсе:
+# ошибка вида "bad interpreter: /usr/bin/env bash^M". Git на Windows по
+# умолчанию подменяет окончания строк при выгрузке, поэтому запрещаем явно.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# PowerShell 5.1 читает .ps1 без BOM как cp1251 и ломается на кириллице,
+# поэтому эти файлы не трогаем вообще
+*.ps1 -text

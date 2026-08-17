@@ -1,0 +1,23 @@
+# Окружение и секреты
+.env
+confluence/.env
+*.key
+*.pem
+
+# Локальное окружение Python (261 МБ, ставится из requirements.txt)
+.venv/
+__pycache__/
+*.pyc
+
+# Данные: они на диске у каждого свои и весят гигабайты
+data/
+corpus/progit2-ru/
+corpus/md/
+confluence/pages/
+confluence/.sync_state.json
+graphify-out/
+
+# Служебное
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,114 @@
+# Локальный ИИ-ассистент в закрытом контуре.
+#
+# Все пути и порты - через переменные из .env, поэтому стек одинаково едет
+# на Windows (D:\...) и на Linux (/srv/local-ai/...). Значения по умолчанию
+# рассчитаны на Linux; для Windows задайте пути в .env.
+#
+#   docker compose up -d              поднять
+#   docker compose --profile quality up -d   + реранкер (обычно не нужен)
+
+services:
+  # Один сервис Ollama на всё: генеративная модель + эмбеддер.
+  # Модели лежат на хосте, вне контейнера — пересоздание контейнера
+  # не приводит к повторной загрузке 16 ГБ.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ${MODELS_DIR:-./data/ollama}:/root/.ollama
+    environment:
+      # ЕДИНЫЙ размер контекста для всех моделей. Ollama считает разные
+      # размеры контекста РАЗНЫМИ экземплярами: прогрев на 32K плюс запрос
+      # приложения на 8K = два экземпляра одной модели в видеопамяти. Они не
+      # помещаются, начинается вытеснение, и запрос ждёт 18-77 секунд
+      # загрузки с диска. Для RAG 8192 хватает: 5 фрагментов ≈ 2-3 тыс. токенов
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-8192}
+      # Модели выгружаются после простоя. При 15m первый запрос после обеда
+      # ждал 77 секунд, и MCP-клиент отваливался по таймауту
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-2h}
+      # Держать генеративную модель и эмбеддер в памяти ОДНОВРЕМЕННО: поиск
+      # дёргает обе подряд, и без этого каждый запрос платит за перезагрузку
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-2}
+      # 1 слот: иначе Ollama умножает выделение KV-кэша на число слотов
+      - OLLAMA_NUM_PARALLEL=1
+      # Экономия видеопамяти на KV-кэше, примерно вдвое
+      - OLLAMA_FLASH_ATTENTION=1
+      - OLLAMA_KV_CACHE_TYPE=q8_0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "6334:6334"
+    volumes:
+      # Каталогом на хосте, а не волюмом Docker: базу проще бэкапить
+      # (копирование папки при остановленном контейнере) и видно, сколько занимает
+      - ${QDRANT_DIR:-./data/qdrant}:/qdrant/storage
+    environment:
+      # payload на диске, в оперативной памяти только векторы
+      - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
+
+  # MCP-сервер поиска: kb_search (документы) + code_search (код).
+  # К нему подключается Continue.
+  kb:
+    build: .
+    container_name: kb
+    restart: unless-stopped
+    ports:
+      - "${KB_PORT:-8010}:8010"
+    volumes:
+      # Репозитории только на чтение: клонирует их code-graph, а индексирует kb
+      - ${CODE_DIR:-./data/code}:/data:ro
+      # Документы для индексации (выгрузка Confluence, локальные файлы)
+      - ${DOCS_DIR:-./data/docs}:/docs:ro
+    environment:
+      - KB_RERANK=${KB_RERANK:-0}
+      - KB_EXPAND=${KB_EXPAND:-1}
+      - KB_MIN_SCORE=${KB_MIN_SCORE:-0.48}
+      - KB_EXPAND_MODEL=${GEN_MODEL:-qwen3:8b}
+      - KB_EMBED_MODEL=${EMBED_MODEL:-bge-m3}
+    depends_on:
+      - ollama
+      - qdrant
+
+  # Граф кода: git -> Graphify -> MCP на :8011.
+  # Отдельный сервер намеренно: код и документация — разные источники,
+  # и код можно выключить, не трогая поиск по документации.
+  code-graph:
+    build: ./code
+    container_name: code-graph
+    restart: unless-stopped
+    ports:
+      - "${CODE_GRAPH_PORT:-8011}:8011"
+    volumes:
+      - ${CODE_DIR:-./data/code}:/data
+    environment:
+      # Список репозиториев через запятую, задаётся в .env.
+      # Приватные — с токеном в URL
+      - CODE_REPOS=${CODE_REPOS:-}
+
+  # Реранкер второй ступени. По умолчанию НЕ поднимается: на наших замерах
+  # прибавил один вопрос из пятнадцати, но стоил 48 секунд на запрос (CPU).
+  # Поднять: docker compose --profile quality up -d, затем KB_RERANK=1
+  reranker:
+    profiles: ["quality"]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    container_name: reranker
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    volumes:
+      - ${TEI_DIR:-./data/tei}:/data
+    command: ["--model-id", "BAAI/bge-reranker-v2-m3"]
