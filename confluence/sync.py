@@ -39,7 +39,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 from storage_to_md import convert  # noqa: E402
 
 HERE = Path(__file__).parent
-STATE_FILE = HERE / ".sync_state.json"
+
+
+def state_file(out_dir: Path) -> Path:
+    """Файл состояния лежит РЯДОМ С ВЫГРУЗКОЙ, а не рядом со скриптом.
+
+    Иначе в контейнере он остаётся внутри образа: теряется при пересборке, а
+    если случайно попадёт в образ — синхронизация решит, что всё уже выгружено,
+    и не запишет ни строчки.
+    """
+    return out_dir / ".sync_state.json"
 
 
 def load_env() -> None:
@@ -212,10 +221,10 @@ def safe_name(title: str) -> str:
     return (name or "untitled")[:120]
 
 
-def load_state() -> dict:
-    if STATE_FILE.exists():
+def load_state(path: Path) -> dict:
+    if path.exists():
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return {}
     return {}
@@ -240,7 +249,9 @@ def main() -> int:
 
     if not url or not token:
         print("Не заданы CONFLUENCE_URL и CONFLUENCE_TOKEN.")
-        print(f"Создайте {HERE / '.env'} по образцу .env.example")
+        print("  - в развёрнутой системе: пропишите их в .env проекта, они")
+        print("    передаются в контейнер (docker compose up -d kb после правки)")
+        print(f"  - при запуске вручную: создайте {HERE / '.env'} по образцу")
         return 2
 
     client = Client(url, token)
@@ -305,7 +316,9 @@ def main() -> int:
                     print(f"    {space:12} ошибка: {e}")
         return 0
 
-    state = {} if args.full else load_state()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    state_path = state_file(out_dir)
+    state = {} if args.full else load_state(state_path)
     new_state = dict(state)
     stats = {"новых": 0, "обновлено": 0, "без изменений": 0, "ошибок": 0}
     processed = 0
@@ -379,7 +392,7 @@ def main() -> int:
         print(f"    {key:14} {value}")
 
     if not args.dry_run:
-        STATE_FILE.write_text(
+        state_path.write_text(
             json.dumps(
                 {**new_state, "_synced_at": datetime.now().isoformat()},
                 ensure_ascii=False,
@@ -388,9 +401,9 @@ def main() -> int:
             encoding="utf-8",
         )
         print(f"\nФайлы: {out_dir}")
-        print(f"Состояние: {STATE_FILE.name} (для инкрементальной синхронизации)")
+        print(f"Состояние: {state_path} (для инкрементальной синхронизации)")
         print("\nДальше проиндексировать:")
-        print(f'    .\\index-files.ps1 -SourceDir "{out_dir}" -Source "confluence"')
+        print(f'    docker compose exec kb python -m kb.doc_index "{out_dir}" --source confluence')
 
     return 0
 

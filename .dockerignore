@@ -1,0 +1,14 @@
+# В образ не должно попадать локальное состояние и данные: файл синхронизации
+# Confluence, попав внутрь, заставляет выгрузку думать, что всё уже выгружено,
+# и она молча не пишет ни строчки.
+.venv/
+__pycache__/
+*.pyc
+.env
+confluence/.env
+confluence/.sync_state.json
+confluence/pages/
+corpus/
+data/
+.git/
+*.log
