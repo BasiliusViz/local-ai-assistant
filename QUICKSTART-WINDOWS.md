@@ -41,7 +41,42 @@ D:\local-ai\docs\
 Имя папки становится меткой источника: по ней потом можно фильтровать поиск и
 отличать вики от прочего. Если свалить всё в корень — попадёт одной меткой.
 
-Выгрузка из Confluence — отдельно, см. `confluence/README.md`.
+### Выгрузка из Confluence
+
+```powershell
+pip install -r confluence\requirements.txt
+copy confluence\.env.example confluence\.env
+notepad confluence\.env
+```
+
+Заполнить:
+
+```
+CONFLUENCE_URL=https://wiki.company.local
+CONFLUENCE_TOKEN=ваш-PAT-токен
+CONFLUENCE_PAGES=123456
+CONFLUENCE_OUT=D:\local-ai\docs\confluence
+```
+
+`CONFLUENCE_PAGES` — идентификатор **корневой страницы**, виден в её адресе:
+`.../pages/viewpage.action?pageId=123456`. Забирается сама страница и всё
+поддерево под ней, на любой глубине. Токен создаётся в профиле Confluence,
+раздел Personal Access Tokens — это не пароль.
+
+```powershell
+python confluence\sync.py --check     # связь, спейсы, сколько страниц
+python confluence\sync.py --dry-run   # что будет выгружено, без записи
+python confluence\sync.py             # выгрузка
+```
+
+**Откройте пару выгруженных файлов и посмотрите глазами**: сохранились ли
+заголовки, таблицы, блоки кода. По этим текстам будет отвечать модель, и проще
+поймать проблему здесь, чем потом гадать, почему поиск врёт.
+
+Повторный запуск забирает только изменившиеся страницы — состояние хранится
+рядом с выгрузкой, в `.sync_state.json`.
+
+Подробности и разбор ошибок — `confluence/README.md`.
 
 ## 3. Код (если нужен поиск по нему)
 
@@ -106,11 +141,16 @@ mcpServers:
 schtasks /create /tn "local-ai code" /tr "powershell -File C:\local-ai\update-code.ps1" /sc hourly
 ```
 
-Документы — после каждого пополнения:
+Документы — после каждого пополнения. Для Confluence это две команды подряд,
+их удобно положить в один `.bat` или задание планировщика:
 
 ```powershell
+python confluence\sync.py
 docker compose exec kb python -m kb.doc_index /docs/confluence --source confluence
 ```
+
+Индексация обновляет только изменившиеся файлы: идентификатор чанка выводится
+из пути и номера, повторный запуск переписывает точки, а не плодит дубли.
 
 ## Если что-то не так
 
