@@ -133,8 +133,15 @@ class Client:
             )
         if resp.status_code == 403:
             raise ConfluenceError(
-                "403: доступ запрещён. Токен рабочий, но у пользователя нет "
-                "прав на этот спейс, либо администратор ограничил REST API"
+                f"403: доступ запрещён на {path}\n"
+                "  Токен принят (иначе был бы 401), но прав на эту операцию нет.\n"
+                "  - если путь /rest/api/space: просмотр списка спейсов часто\n"
+                "    закрыт администратором. Укажите CONFLUENCE_PAGES с id\n"
+                "    страницы — список спейсов тогда не запрашивается\n"
+                "  - если путь /rest/api/content/<id>: нет доступа к этой\n"
+                "    странице или она в закрытом спейсе\n"
+                "  - проверьте тем же токеном вручную:\n"
+                f"    curl -H \"Authorization: Bearer <токен>\" {self.base}{path}"
             )
         if resp.status_code == 404:
             raise ConfluenceError(
@@ -256,36 +263,39 @@ def main() -> int:
 
     client = Client(url, token)
 
-    # ---------- проверка связи ----------
-    try:
-        available = client.spaces()
-    except ConfluenceError as e:
-        print(f"Связь не установлена.\n{e}")
-        return 1
-
-    print(f"Соединение с {url}: OK")
-    print(f"Доступно спейсов: {len(available)}")
-    for s in available[:20]:
-        print(f"    {s.get('key'):12} {s.get('name', '')}")
-    if len(available) > 20:
-        print(f"    ... и ещё {len(available) - 20}")
-
     # Два режима. CONFLUENCE_PAGES важнее: раздел точнее спейса, в котором
     # обычно лежит много лишнего — черновики, архив, чужие эксперименты.
     roots = [p.strip() for p in pages_env.split(",") if p.strip()]
     targets: list[str] = []
 
     if roots:
-        print(f"\nРежим: поддеревья страниц ({', '.join(roots)})")
+        # Список спейсов НЕ запрашиваем: право на его просмотр отдельное, и
+        # администраторы его часто закрывают — получался 403 ещё до обращения
+        # к самой странице. Для работы по id он не нужен вовсе.
+        print(f"Режим: поддеревья страниц ({', '.join(roots)})")
         for page_id in roots:
             try:
                 info = client.page(page_id, with_body=False)
                 print(f"    {page_id:10} «{info.get('title')}» "
                       f"(спейс {info.get('space', {}).get('key')})")
             except ConfluenceError as e:
-                print(f"    {page_id:10} недоступна: {e}")
+                print(f"    {page_id:10} недоступна.\n{e}")
                 return 1
     else:
+        try:
+            available = client.spaces()
+        except ConfluenceError as e:
+            print(f"Не удалось получить список спейсов.\n{e}")
+            print("\nСовет: укажите CONFLUENCE_PAGES с id корневой страницы —")
+            print("тогда список спейсов не понадобится вовсе.")
+            return 1
+
+        print(f"Доступно спейсов: {len(available)}")
+        for s in available[:20]:
+            print(f"    {s.get('key'):12} {s.get('name', '')}")
+        if len(available) > 20:
+            print(f"    ... и ещё {len(available) - 20}")
+
         wanted = [s.strip() for s in spaces_env.split(",") if s.strip()]
         if wanted:
             known = {s.get("key") for s in available}

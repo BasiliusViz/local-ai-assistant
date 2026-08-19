@@ -1,4 +1,4 @@
-"""Заглушка Confluence Server REST API для проверки коннектора без Confluence.
+﻿"""Заглушка Confluence Server REST API для проверки коннектора без Confluence.
 
 Отдаёт /rest/api/content и /rest/api/space в том же формате, что настоящий
 Confluence Server/Data Center: storage-формат (XHTML), пагинация через
@@ -18,6 +18,8 @@ from urllib.parse import parse_qs, urlparse
 
 PORT = 8090
 TOKEN = "test-token"
+# Имитация закрытого администратором списка спейсов (частая настройка)
+SPACES_FORBIDDEN = False
 
 SPACES = [
     {"key": "DEV", "name": "Разработка"},
@@ -150,6 +152,9 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(url.query)
 
         if url.path == "/rest/api/space":
+            if SPACES_FORBIDDEN:
+                self._send(403, {"message": "Forbidden"})
+                return
             self._send(200, {"results": [{"key": s["key"], "name": s["name"]} for s in SPACES], "size": len(SPACES)})
             return
 
