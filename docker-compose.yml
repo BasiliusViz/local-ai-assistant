@@ -52,7 +52,10 @@ services:
       - KB_OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434/v1}
       - KB_OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
       - KB_OLLAMA_AUTH_HEADER=${OLLAMA_AUTH_HEADER:-Authorization}
-      - KB_OLLAMA_AUTH_PREFIX=${OLLAMA_AUTH_PREFIX:-Bearer }
+      # Без двоеточия: ${VAR-default} оставляет ПУСТОЕ значение пустым, а
+      # ${VAR:-default} подменило бы его на Bearer. Для шлюзов с x-api-key
+      # префикс должен быть пустым, иначе уходит "x-api-key: Bearer <ключ>"
+      - KB_OLLAMA_AUTH_PREFIX=${OLLAMA_AUTH_PREFIX-Bearer }
       # Выгрузка Confluence запускается в этом же контейнере:
       #   docker compose exec kb python confluence/sync.py --check
       - CONFLUENCE_URL=${CONFLUENCE_URL:-}
