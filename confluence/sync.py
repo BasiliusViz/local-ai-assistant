@@ -1,26 +1,31 @@
 """Выгрузка страниц Confluence в markdown-файлы.
 
+Работает по идентификаторам КОРНЕВЫХ страниц: забирается сама страница и всё
+поддерево под ней, на любой глубине. Выгрузки спейсов целиком нет намеренно —
+в спейсе обычно много лишнего (черновики, архив), а право на просмотр списка
+спейсов отдельное, и администраторы его часто закрывают: получался 403 на
+ровном месте.
+
 Рассчитан на запуск в закрытом контуре без посторонней помощи, поэтому:
   - сначала проверяет связь и печатает, что видит (--check)
   - показывает, что будет сделано, ничего не записывая (--dry-run)
   - сохраняет сырой ответ API для разбора проблем (--dump-raw)
   - объясняет ошибки словами, а не трейсбеком
-  - только стандартная библиотека, ставить ничего не нужно
 
 Настройка (переменные окружения или .env рядом со скриптом):
     CONFLUENCE_URL     https://wiki.company.local
     CONFLUENCE_TOKEN   personal access token
-    CONFLUENCE_SPACES  DEV,OPS         (пусто = все доступные)
+    CONFLUENCE_PAGES   123456,789012   идентификаторы корневых страниц
     CONFLUENCE_OUT     ./confluence/pages
 
 Использование:
-    python confluence/sync.py --check       проверить связь и показать спейсы
+    python confluence/sync.py --check       проверить связь и посчитать страницы
     python confluence/sync.py --dry-run     показать, что будет выгружено
     python confluence/sync.py               выгрузить
     python confluence/sync.py --full        игнорировать даты, выгрузить всё
 
-Дальше выгруженное индексируется обычным путём:
-    .\\index-files.ps1 -SourceDir ".\\confluence\\pages" -Source "confluence"
+Дальше выгруженное индексируется:
+    docker compose exec kb python -m kb.doc_index /docs/confluence --source confluence
 """
 
 import argparse
@@ -162,16 +167,6 @@ class Client:
                 "значит запрос ушёл неаутентифицированным или URL ведёт не в API"
             ) from e
 
-    def spaces(self) -> list[dict]:
-        out, start = [], 0
-        while True:
-            data = self.get("/rest/api/space", start=start, limit=50)
-            results = data.get("results", [])
-            out.extend(results)
-            if len(results) < 50:
-                return out
-            start += 50
-
     def page(self, page_id: str, with_body: bool = True) -> dict:
         return self.get(
             f"/rest/api/content/{page_id}",
@@ -199,27 +194,6 @@ class Client:
             if len(results) < page_size:
                 return
             start += page_size
-
-    def pages(self, space: str | None, with_body: bool, page_size: int = 25):
-        """Все страницы спейса, с постраничной выборкой."""
-        start = 0
-        while True:
-            data = self.get(
-                "/rest/api/content",
-                spaceKey=space,
-                type="page",
-                status="current",
-                expand="body.storage,version,space" if with_body else "version,space",
-                start=start,
-                limit=page_size,
-            )
-            results = data.get("results", [])
-            for item in results:
-                yield item
-            if len(results) < page_size:
-                return
-            start += page_size
-
 
 def safe_name(title: str) -> str:
     """Заголовок страницы -> имя файла."""
@@ -251,7 +225,6 @@ def main() -> int:
     url = os.getenv("CONFLUENCE_URL", "").strip()
     token = os.getenv("CONFLUENCE_TOKEN", "").strip()
     out_dir = Path(os.getenv("CONFLUENCE_OUT", str(HERE / "pages")))
-    spaces_env = os.getenv("CONFLUENCE_SPACES", "").strip()
     pages_env = os.getenv("CONFLUENCE_PAGES", "").strip()
 
     if not url or not token:
@@ -263,67 +236,31 @@ def main() -> int:
 
     client = Client(url, token)
 
-    # Два режима. CONFLUENCE_PAGES важнее: раздел точнее спейса, в котором
-    # обычно лежит много лишнего — черновики, архив, чужие эксперименты.
     roots = [p.strip() for p in pages_env.split(",") if p.strip()]
-    targets: list[str] = []
+    if not roots:
+        print("Не задан CONFLUENCE_PAGES — идентификаторы корневых страниц.")
+        print("Идентификатор виден в адресе страницы: ...?pageId=123456")
+        print("Забирается сама страница и всё поддерево под ней.")
+        return 2
 
-    if roots:
-        # Список спейсов НЕ запрашиваем: право на его просмотр отдельное, и
-        # администраторы его часто закрывают — получался 403 ещё до обращения
-        # к самой странице. Для работы по id он не нужен вовсе.
-        print(f"Режим: поддеревья страниц ({', '.join(roots)})")
-        for page_id in roots:
-            try:
-                info = client.page(page_id, with_body=False)
-                print(f"    {page_id:10} «{info.get('title')}» "
-                      f"(спейс {info.get('space', {}).get('key')})")
-            except ConfluenceError as e:
-                print(f"    {page_id:10} недоступна.\n{e}")
-                return 1
-    else:
+    print(f"Страницы: {', '.join(roots)}")
+    for page_id in roots:
         try:
-            available = client.spaces()
+            info = client.page(page_id, with_body=False)
+            print(f"    {page_id:10} «{info.get('title')}» "
+                  f"(спейс {info.get('space', {}).get('key')})")
         except ConfluenceError as e:
-            print(f"Не удалось получить список спейсов.\n{e}")
-            print("\nСовет: укажите CONFLUENCE_PAGES с id корневой страницы —")
-            print("тогда список спейсов не понадобится вовсе.")
+            print(f"    {page_id:10} недоступна.\n{e}")
             return 1
 
-        print(f"Доступно спейсов: {len(available)}")
-        for s in available[:20]:
-            print(f"    {s.get('key'):12} {s.get('name', '')}")
-        if len(available) > 20:
-            print(f"    ... и ещё {len(available) - 20}")
-
-        wanted = [s.strip() for s in spaces_env.split(",") if s.strip()]
-        if wanted:
-            known = {s.get("key") for s in available}
-            missing = [s for s in wanted if s not in known]
-            if missing:
-                print(f"\nСпейсы не найдены или недоступны: {', '.join(missing)}")
-                return 1
-            targets = wanted
-        else:
-            targets = [s.get("key") for s in available]
-        print(f"\nРежим: спейсы целиком ({', '.join(targets)})")
-
     if args.check:
-        if roots:
-            for page_id in roots:
-                try:
-                    count = sum(1 for _ in client.descendants(page_id, with_body=False))
-                    # сама корневая страница тоже выгружается
-                    print(f"    {page_id:10} страниц в поддереве: {count + 1}")
-                except ConfluenceError as e:
-                    print(f"    {page_id:10} ошибка: {e}")
-        else:
-            for space in targets:
-                try:
-                    count = sum(1 for _ in client.pages(space, with_body=False))
-                    print(f"    {space:12} страниц: {count}")
-                except ConfluenceError as e:
-                    print(f"    {space:12} ошибка: {e}")
+        for page_id in roots:
+            try:
+                count = sum(1 for _ in client.descendants(page_id, with_body=False))
+                # сама корневая страница тоже выгружается
+                print(f"    {page_id:10} страниц в поддереве: {count + 1}")
+            except ConfluenceError as e:
+                print(f"    {page_id:10} ошибка: {e}")
         return 0
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -334,15 +271,11 @@ def main() -> int:
     processed = 0
 
     def source_pages():
-        """Страницы к выгрузке: поддеревья либо спейсы целиком."""
-        if roots:
-            for root_id in roots:
-                # Корневая страница тоже нужна: в CQL ancestor её нет
-                yield client.page(root_id, with_body=True)
-                yield from client.descendants(root_id, with_body=True)
-        else:
-            for space_key in targets:
-                yield from client.pages(space_key, with_body=True)
+        """Корневые страницы и всё, что под ними."""
+        for root_id in roots:
+            # Корневая страница тоже нужна: в выдаче CQL ancestor её нет
+            yield client.page(root_id, with_body=True)
+            yield from client.descendants(root_id, with_body=True)
 
     seen_ids: set[str] = set()
 

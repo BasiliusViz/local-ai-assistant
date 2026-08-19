@@ -1,4 +1,4 @@
-# Локальный ИИ-ассистент в закрытом контуре.
+﻿# Локальный ИИ-ассистент в закрытом контуре.
 #
 # Модель (Ollama) здесь НЕ разворачивается: она живёт на отдельной машине,
 # её адрес задаётся в OLLAMA_URL. Этому стеку GPU не нужен - qdrant, kb и
@@ -58,7 +58,6 @@ services:
       - CONFLUENCE_URL=${CONFLUENCE_URL:-}
       - CONFLUENCE_TOKEN=${CONFLUENCE_TOKEN:-}
       - CONFLUENCE_PAGES=${CONFLUENCE_PAGES:-}
-      - CONFLUENCE_SPACES=${CONFLUENCE_SPACES:-}
       - CONFLUENCE_OUT=/docs/confluence
     depends_on:
       # Только Qdrant: Ollama обычно внешняя, и ждать её контейнер бессмысленно
