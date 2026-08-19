@@ -107,23 +107,29 @@ try {
 
 Write-Host ""
 Write-Host "=== Живой поиск ==="
+# Код состояния — латиницей: json.dumps экранирует кириллицу в \uXXXX,
+# и поиск русской фразы в ответе не срабатывал
 $search = docker exec kb python -c @"
 import json
-from kb.retriever import search
+from kb.retriever import search, collection_ready
 try:
-    hits = search('как это работает', top_k=3)
-    print(json.dumps({'ok': True, 'found': len(hits.hits)}))
+    if not collection_ready():
+        print(json.dumps({'ok': False, 'code': 'no_collection'}))
+    else:
+        hits = search('как это работает', top_k=3)
+        print(json.dumps({'ok': True, 'found': len(hits.hits)}))
 except Exception as e:
-    print(json.dumps({'ok': False, 'error': str(e)[:120]}))
+    print(json.dumps({'ok': False, 'code': 'error', 'error': str(e)[:120]}, ensure_ascii=False))
 "@ 2>$null | Select-Object -Last 1
 
 if ($search -match '"ok": true') {
     $found = [regex]::Match($search, '"found": (\d+)').Groups[1].Value
     if ([int]$found -gt 0) { Ok "поиск по документам работает (найдено: $found)" }
     else { Warn "поиск отработал, но ничего не нашёл — проверьте, что документы проиндексированы" }
-} elseif ($search -match "не создана") {
+} elseif ($search -match "no_collection") {
     # Свежее развёртывание: это не поломка, а отсутствие данных
     Warn "документы ещё не проиндексированы — коллекция не создана"
+    Warn "docker compose exec kb python -m kb.doc_index /docs/<папка> --source <имя>"
 } else {
     Bad "поиск по документам сломан: $search"
 }

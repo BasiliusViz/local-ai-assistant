@@ -96,23 +96,29 @@ echo
 echo "=== Живой поиск ==="
 # Проверяем не «порт открыт», а что поиск реально что-то находит:
 # сервис может отвечать 200 и при этом возвращать пустоту из-за пустой базы
+# Код состояния — латиницей: json.dumps экранирует кириллицу в \uXXXX,
+# и поиск русской фразы в ответе не срабатывал
 result=$(docker exec kb python -c "
 import json
-from kb.retriever import search
+from kb.retriever import search, collection_ready
 try:
-    hits = search('как это работает', top_k=3)
-    print(json.dumps({'ok': True, 'found': len(hits.hits)}))
+    if not collection_ready():
+        print(json.dumps({'ok': False, 'code': 'no_collection'}))
+    else:
+        hits = search('как это работает', top_k=3)
+        print(json.dumps({'ok': True, 'found': len(hits.hits)}))
 except Exception as e:
-    print(json.dumps({'ok': False, 'error': str(e)[:120]}))
+    print(json.dumps({'ok': False, 'code': 'error', 'error': str(e)[:120]}, ensure_ascii=False))
 " 2>/dev/null | tail -1)
 
 if echo "$result" | grep -q '"ok": true'; then
     found=$(echo "$result" | grep -o '"found": [0-9]*' | cut -d' ' -f2)
     [ "${found:-0}" -gt 0 ] && ok "поиск по документам работает (найдено: $found)" \
         || warn "поиск отработал, но ничего не нашёл — проверьте, что документы проиндексированы"
-elif echo "$result" | grep -q "не создана"; then
+elif echo "$result" | grep -q "no_collection"; then
     # Свежее развёртывание: это не поломка, а отсутствие данных
     warn "документы ещё не проиндексированы — коллекция не создана"
+    warn "docker compose exec kb python -m kb.doc_index /docs/<папка> --source <имя>"
 else
     bad "поиск по документам сломан: $(echo "$result" | head -c 160)"
 fi
