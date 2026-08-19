@@ -186,6 +186,15 @@ def _rerank_hits(query: str, points, top_k: int) -> "SearchResult":
     return SearchResult(hits=hits, dropped=len(points) - len(hits))
 
 
+def collection_ready() -> bool:
+    """Есть ли коллекция. На свежем развёртывании её ещё нет."""
+    try:
+        return client().collection_exists(config.COLLECTION)
+    except Exception as e:
+        log.debug("не удалось проверить коллекцию: %s", e)
+        return False
+
+
 def search(
     query: str,
     top_k: int = config.DEFAULT_TOP_K,
@@ -194,6 +203,16 @@ def search(
 ) -> SearchResult:
     if not query or not query.strip():
         raise SearchError("Пустой запрос: нужен вопрос на естественном языке.")
+
+    # Коллекция создаётся при первой индексации. Без этой проверки поиск
+    # падал с невнятной ошибкой Qdrant вместо понятного объяснения
+    if not collection_ready():
+        raise SearchError(
+            f"Коллекция «{config.COLLECTION}» ещё не создана — документы не "
+            "проиндексированы. Положите их в каталог DOCS_DIR и выполните: "
+            "docker compose exec kb python -m kb.doc_index /docs/<папка> "
+            "--source <имя источника>"
+        )
 
     top_k = max(1, min(top_k, config.MAX_TOP_K))
 
