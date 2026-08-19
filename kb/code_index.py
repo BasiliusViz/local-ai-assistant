@@ -53,7 +53,9 @@ TEXT_SUFFIXES = {".yml", ".yaml", ".sh", ".tf", ".ini", ".cfg", ".toml"}
 SKIP_DIRS = {
     ".git", ".venv", "venv", "node_modules", "__pycache__", ".tox", ".mypy_cache",
     "migrations", "vendor", "third_party", "dist", "build", ".idea", ".vscode",
-    "graphify-out", "site-packages",
+    # graph — наш собственный каталог с результатом, он оказывается рядом
+    # с проектами, когда код лежит прямо в CODE_DIR
+    "graphify-out", "site-packages", "graph",
     # каталоги тестов целиком: фильтр по имени файла их не ловит
     # (tests/__init__.py, tests/testserver/server.py), а в выдаче они
     # вытесняют саму реализацию
@@ -236,6 +238,13 @@ def main() -> int:
     if not root.is_dir():
         print(f"Не каталог: {root}")
         return 1
+
+    # Репозитории могут лежать и прямо в указанной папке, и во вложенной
+    # repos/ (туда их кладёт клонирование). Поддерживаем оба варианта, чтобы
+    # можно было просто показать каталог с кодом, ничего не перекладывая
+    if (root / "repos").is_dir():
+        root = root / "repos"
+    print(f"Каталог с репозиториями: {root}")
 
     client = QdrantClient(url=config.QDRANT_URL, timeout=120)
 

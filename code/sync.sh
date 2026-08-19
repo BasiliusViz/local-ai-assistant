@@ -10,19 +10,30 @@
 
 set -e
 
-REPOS_DIR="${REPOS_DIR:-/data/repos}"
 GRAPH_DIR="${GRAPH_DIR:-/data/graph}"
-mkdir -p "$REPOS_DIR" "$GRAPH_DIR"
+mkdir -p "$GRAPH_DIR"
 
-if [ -z "$CODE_REPOS" ]; then
-    echo "CODE_REPOS не задана - нечего синхронизировать."
-    echo "Укажите репозитории в docker-compose.yml или .env"
-    # Не падаем: сервер поднимется на том графе, что уже есть
-    exit 0
+# Репозитории могут лежать прямо в /data (просто показали каталог с кодом)
+# либо в /data/repos (туда их кладёт клонирование). Поддерживаем оба:
+# если repos/ нет и клонировать нечего - работаем с тем, что есть в /data
+REPOS_DIR="${REPOS_DIR:-/data/repos}"
+if [ ! -d "$REPOS_DIR" ] && [ -z "${CODE_REPOS:-}" ]; then
+    REPOS_DIR="/data"
+fi
+mkdir -p "$REPOS_DIR" 2>/dev/null || true
+echo "Каталог с репозиториями: $REPOS_DIR"
+
+if [ -z "${CODE_REPOS:-}" ]; then
+    echo "CODE_REPOS не задана - клонирование пропускаем, строим граф по тому,"
+    echo "что уже лежит в каталоге."
+    if [ -z "$(ls -A "$REPOS_DIR" 2>/dev/null)" ]; then
+        echo "Каталог пуст. Положите туда код или укажите CODE_REPOS в .env."
+        exit 0
+    fi
 fi
 
-echo "=== Синхронизация репозиториев ==="
-for repo in $(echo "$CODE_REPOS" | tr ',' ' '); do
+[ -n "${CODE_REPOS:-}" ] && echo "=== Синхронизация репозиториев ==="
+for repo in $(echo "${CODE_REPOS:-}" | tr ',' ' '); do
     name=$(basename "$repo" .git)
     target="$REPOS_DIR/$name"
 
@@ -47,6 +58,10 @@ graphs=""
 for dir in "$REPOS_DIR"/*/; do
     [ -d "$dir" ] || continue
     name=$(basename "$dir")
+    # Свой же каталог с результатом за репозиторий не считаем: когда код
+    # лежит прямо в /data, graph/ оказывается рядом с проектами
+    [ "$dir" = "$GRAPH_DIR/" ] && continue
+    case "$name" in graph|.git) continue ;; esac
     echo "--- $name"
     # update, а не extract: только AST, без LLM и без сети
     graphify update "$dir" 2>&1 | grep -E "Rebuilt|error|Error" | sed 's/^/    /' || true
