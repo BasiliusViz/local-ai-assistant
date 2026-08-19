@@ -46,7 +46,7 @@ $graphPort  = if ($cfg.CODE_GRAPH_PORT) { $cfg.CODE_GRAPH_PORT } else { "8011" }
 $genModel   = if ($cfg.GEN_MODEL)   { $cfg.GEN_MODEL }   else { "qwen3:8b" }
 $embedModel = if ($cfg.EMBED_MODEL) { $cfg.EMBED_MODEL } else { "bge-m3" }
 
-foreach ($key in @("MODELS_DIR", "QDRANT_DIR", "CODE_DIR", "DOCS_DIR")) {
+foreach ($key in @("QDRANT_DIR", "CODE_DIR", "DOCS_DIR")) {
     if ($cfg[$key]) {
         New-Item -ItemType Directory -Path $cfg[$key] -Force | Out-Null
     }

@@ -52,7 +52,7 @@ def split_text(text: str, max_len: int = MAX_CHUNK_CHARS) -> list[dict]:
     fenced = False
 
     def flush() -> None:
-        nonlocal current, current_path
+        nonlocal current
         body = "\n".join(current).strip()
         if body:
             sections.append((current_path, body))

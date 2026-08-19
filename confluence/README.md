@@ -6,7 +6,7 @@
 ## Что происходит
 
 ```
-Confluence API  ->  sync.py  ->  markdown-файлы  ->  index-files.ps1  ->  Qdrant
+Confluence API  ->  sync.py  ->  markdown-файлы  ->  kb/doc_index.py  ->  Qdrant
 ```
 
 Два шага намеренно разделены: если разметка сконвертируется криво, это видно
@@ -83,10 +83,7 @@ python confluence/sync.py --limit 20
 
 ```bash
 python confluence/sync.py
-```
-
-```powershell
-.\index-files.ps1 -SourceDir ".\confluence\pages" -Source "confluence"
+docker compose exec kb python -m kb.doc_index /docs/confluence --source confluence
 ```
 
 **6. Обновления — те же две команды**
