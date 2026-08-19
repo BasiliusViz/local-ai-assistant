@@ -27,16 +27,15 @@ $graphPort  = if ($cfg.CODE_GRAPH_PORT) { $cfg.CODE_GRAPH_PORT } else { "8011" }
 $genModel   = if ($cfg.GEN_MODEL) { $cfg.GEN_MODEL } else { "qwen3:8b" }
 $embedModel = if ($cfg.EMBED_MODEL) { $cfg.EMBED_MODEL } else { "bge-m3" }
 
-# Ollama бывает внешней (на машине с GPU) — тогда её контейнера здесь нет,
-# и это нормально. Определяем по адресу из .env
-$ollamaUrl = if ($cfg.OLLAMA_URL) { $cfg.OLLAMA_URL } else { "http://localhost:$ollamaPort/v1" }
+# Модель всегда внешняя: её контейнера здесь нет и быть не должно
+$ollamaUrl = if ($cfg.OLLAMA_URL) { $cfg.OLLAMA_URL } else { "" }
 $ollamaBase = $ollamaUrl -replace "/v1/?$", ""
-$ollamaLocal = $ollamaBase -match "localhost|127\.0\.0\.1|//ollama"
+# host.docker.internal понимают только контейнеры; скрипт работает на хосте,
+# для него это localhost. Актуально, когда модель крутится на этой же машине
+$ollamaProbe = $ollamaBase -replace "host\.docker\.internal", "localhost"
 
 Write-Host "=== Контейнеры ==="
-$expected = @("qdrant", "kb", "code-graph")
-if ($ollamaLocal) { $expected = @("ollama") + $expected }
-foreach ($name in $expected) {
+foreach ($name in @("qdrant", "kb", "code-graph")) {
     $state = docker inspect -f "{{.State.Status}}" $name 2>$null
     if ($LASTEXITCODE -ne 0) { Bad "$name не создан" }
     elseif ($state -eq "running") { Ok "$name работает" }
@@ -56,14 +55,18 @@ if ($cfg.OLLAMA_API_KEY) {
     $headers[$hdr] = "$pfx$($cfg.OLLAMA_API_KEY)"
 }
 
-$where = if ($ollamaLocal) { "локальная" } else { "внешняя" }
-try {
-    $tags = Invoke-RestMethod -Uri "$ollamaBase/api/tags" -Headers $headers -TimeoutSec 30
-    Ok "Ollama ($where): $ollamaBase"
-    $names = $tags.models.name -join " "
-} catch {
-    Bad "Ollama ($where) недоступна по адресу $ollamaBase : $($_.Exception.Message)"
+if (-not $ollamaBase) {
+    Bad "не задан OLLAMA_URL — адрес сервера с моделью"
     $names = ""
+} else {
+    try {
+        $tags = Invoke-RestMethod -Uri "$ollamaProbe/api/tags" -Headers $headers -TimeoutSec 30
+        Ok "модель: $ollamaBase"
+        $names = $tags.models.name -join " "
+    } catch {
+        Bad "сервер с моделью недоступен ($ollamaProbe): $($_.Exception.Message)"
+        $names = ""
+    }
 }
 
 Write-Host ""
@@ -71,18 +74,8 @@ Write-Host "=== Модели ==="
 foreach ($model in @($genModel, $embedModel)) {
     $short = ($model -split ":")[0]
     if ($names -match [regex]::Escape($short)) { Ok $model }
-    elseif ($names) { Bad "$model не найдена на сервере Ollama" }
+    elseif ($names) { Bad "$model не найдена на сервере с моделью" }
     else { Bad "$model — не удалось получить список моделей" }
-}
-
-# Обе модели должны помещаться в память ОДНОВРЕМЕННО, иначе каждый запрос
-# оплачивает перезагрузку с диска — самая частая причина «всё тормозит».
-# Проверяем только у локальной: на чужой машине это не наша забота
-if ($ollamaLocal) {
-    $loadedRaw = docker exec ollama ollama ps 2>$null
-    $loaded = ($loadedRaw | Select-Object -Skip 1 | Where-Object { $_.Trim() }).Count
-    if ($loaded -ge 2) { Ok "в памяти моделей: $loaded" }
-    else { Warn "в памяти моделей: $loaded. После простоя это нормально; если так во время работы — проверьте OLLAMA_MAX_LOADED_MODELS и объём видеопамяти" }
 }
 
 Write-Host ""

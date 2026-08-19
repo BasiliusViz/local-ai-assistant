@@ -39,15 +39,17 @@ fi
 set -a; . ./.env; set +a
 ok ".env прочитан"
 
-# GPU не обязателен, но без него всё будет очень медленно — предупреждаем сразу
-if docker info 2>/dev/null | grep -qi nvidia; then
-    ok "GPU виден Docker"
-else
-    warn "GPU не виден Docker. На CPU модели работают в десятки раз медленнее."
-    warn "Нужен nvidia-container-toolkit; проверка: docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi"
-fi
+# Модель всегда внешняя: этот стек её не разворачивает и не настраивает.
+# Видеокарта здесь не нужна — qdrant, kb и code-graph считают на процессоре
+[ -n "${OLLAMA_URL:-}" ] || fail "не задан OLLAMA_URL — адрес сервера с моделью"
+OLLAMA_BASE="${OLLAMA_URL%/v1}"
+OLLAMA_BASE="${OLLAMA_BASE%/}"
+# host.docker.internal понимают только контейнеры; скрипт работает на хосте,
+# для него это localhost. Актуально, когда модель крутится на этой же машине
+OLLAMA_PROBE="${OLLAMA_BASE/host.docker.internal/localhost}"
+ok "модель: $OLLAMA_BASE"
 
-for dir in "${MODELS_DIR}" "${QDRANT_DIR}" "${CODE_DIR}" "${DOCS_DIR}"; do
+for dir in "${QDRANT_DIR}" "${CODE_DIR}" "${DOCS_DIR}"; do
     mkdir -p "$dir" 2>/dev/null || fail "не удалось создать каталог $dir"
 done
 ok "каталоги данных готовы"
@@ -55,23 +57,7 @@ ok "каталоги данных готовы"
 # ---------- 2. контейнеры ----------
 step "2/6. Запуск контейнеров"
 
-# Локальная Ollama живёт в отдельном файле: в проде её нет, модель внешняя
-OLLAMA_BASE="${OLLAMA_URL:-http://localhost:${OLLAMA_PORT:-11434}/v1}"
-OLLAMA_BASE="${OLLAMA_BASE%/v1}"
-OLLAMA_BASE="${OLLAMA_BASE%/}"
-case "$OLLAMA_BASE" in
-    *localhost*|*127.0.0.1*|*//ollama*) OLLAMA_LOCAL=1 ;;
-    *) OLLAMA_LOCAL=0 ;;
-esac
-
-if [ "$OLLAMA_LOCAL" = "1" ]; then
-    ok "Ollama локальная — будет поднята здесь"
-    docker compose -f docker-compose.yml -f docker-compose.local-llm.yml up -d --build \
-        || fail "не удалось поднять стек. Смотрите: docker compose logs"
-else
-    ok "Ollama внешняя: $OLLAMA_BASE (GPU на этой машине не нужен)"
-    compose up -d --build || fail "не удалось поднять стек. Смотрите: docker compose logs"
-fi
+compose up -d --build || fail "не удалось поднять стек. Смотрите: docker compose logs"
 ok "контейнеры запущены"
 
 echo "  ожидание готовности Qdrant..."
@@ -95,16 +81,12 @@ if [ -n "${OLLAMA_API_KEY:-}" ]; then
     AUTH_VALUE="${hdr}: ${pfx}${OLLAMA_API_KEY}"
 fi
 
-tags=$(curl -s ${AUTH_ARGS:+"$AUTH_ARGS" "$AUTH_VALUE"} "${OLLAMA_BASE}/api/tags" 2>/dev/null)
-[ -n "$tags" ] || fail "Ollama недоступна по адресу ${OLLAMA_BASE}"
+tags=$(curl -s ${AUTH_ARGS:+"$AUTH_ARGS" "$AUTH_VALUE"} "${OLLAMA_PROBE}/api/tags" 2>/dev/null)
+[ -n "$tags" ] || fail "сервер с моделью недоступен: ${OLLAMA_BASE}"
 
 for model in "${GEN_MODEL}" "${EMBED_MODEL}"; do
     if echo "$tags" | grep -q "${model%%:*}"; then
         ok "$model на месте"
-    elif [ "$OLLAMA_LOCAL" = "1" ]; then
-        echo "  скачивание $model (это может занять минуты)..."
-        docker exec ollama ollama pull "$model" || fail "не удалось скачать $model"
-        ok "$model загружена"
     else
         # На чужую машину модель не скачать — только попросить владельца
         fail "$model нет на сервере ${OLLAMA_BASE}. Загрузите её там: ollama pull $model"
@@ -112,7 +94,7 @@ for model in "${GEN_MODEL}" "${EMBED_MODEL}"; do
 done
 
 # Размерность вектора обязана совпасть с коллекцией, иначе поиск молча врёт
-dim=$(curl -s -X POST "${OLLAMA_BASE}/v1/embeddings" \
+dim=$(curl -s -X POST "${OLLAMA_PROBE}/v1/embeddings" \
     -H 'Content-Type: application/json' \
     ${AUTH_ARGS:+"$AUTH_ARGS" "$AUTH_VALUE"} \
     -d "{\"model\":\"${EMBED_MODEL}\",\"input\":[\"тест\"]}" \

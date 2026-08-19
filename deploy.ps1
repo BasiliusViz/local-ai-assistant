@@ -53,30 +53,20 @@ foreach ($key in @("MODELS_DIR", "QDRANT_DIR", "CODE_DIR", "DOCS_DIR")) {
 }
 Ok "каталоги данных готовы"
 
-# Где живёт модель. Если Ollama внешняя, этой машине GPU не нужен вовсе:
-# qdrant, kb и code-graph — обычные приложения на процессоре
-$ollamaUrl = if ($cfg.OLLAMA_URL) { $cfg.OLLAMA_URL } else { "http://localhost:$ollamaPort/v1" }
+# Модель всегда внешняя: этот стек её не разворачивает и не настраивает.
+# Видеокарта здесь не нужна — qdrant, kb и code-graph считают на процессоре
+$ollamaUrl = if ($cfg.OLLAMA_URL) { $cfg.OLLAMA_URL } else { "" }
+if (-not $ollamaUrl) { Fail "не задан OLLAMA_URL — адрес сервера с моделью" }
 $ollamaBase = $ollamaUrl -replace "/v1/?$", ""
-$ollamaLocal = $ollamaBase -match "localhost|127\.0\.0\.1|//ollama"
-
-if ($ollamaLocal) {
-    Ok "Ollama локальная — будет поднята здесь"
-    $gpu = docker info 2>$null | Select-String -Pattern "nvidia" -Quiet
-    if ($gpu) { Ok "GPU виден Docker" }
-    else { Warn "GPU не виден Docker. На процессоре модели работают в десятки раз медленнее" }
-} else {
-    Ok "Ollama внешняя: $ollamaBase (GPU на этой машине не нужен)"
-}
+# host.docker.internal понимают только контейнеры; скрипт работает на хосте,
+# для него это localhost. Актуально, когда модель крутится на этой же машине
+$ollamaProbe = $ollamaBase -replace "host\.docker\.internal", "localhost"
+Ok "модель: $ollamaBase"
 
 # ---------- 2. контейнеры ----------
 Step "2/6. Запуск контейнеров"
 
-# Локальная Ollama живёт в отдельном файле: в проде её нет, модель внешняя
-if ($ollamaLocal) {
-    docker compose -f docker-compose.yml -f docker-compose.local-llm.yml up -d --build
-} else {
-    docker compose up -d --build
-}
+docker compose up -d --build
 if ($LASTEXITCODE -ne 0) { Fail "не удалось поднять стек. Смотрите: docker compose logs" }
 Ok "контейнеры запущены"
 
@@ -102,7 +92,7 @@ if ($cfg.OLLAMA_API_KEY) {
 }
 
 try {
-    $tags = Invoke-RestMethod -Uri "$ollamaBase/api/tags" -Headers $headers -TimeoutSec 60
+    $tags = Invoke-RestMethod -Uri "$ollamaProbe/api/tags" -Headers $headers -TimeoutSec 60
     $installed = $tags.models.name -join " "
 } catch {
     Fail "Ollama недоступна по адресу $ollamaBase : $($_.Exception.Message)"
@@ -112,21 +102,16 @@ foreach ($model in @($genModel, $embedModel)) {
     $short = ($model -split ":")[0]
     if ($installed -match [regex]::Escape($short)) {
         Ok "$model на месте"
-    } elseif ($ollamaLocal) {
-        Write-Host "  скачивание $model (это может занять минуты)..."
-        docker exec ollama ollama pull $model
-        if ($LASTEXITCODE -ne 0) { Fail "не удалось скачать $model" }
-        Ok "$model загружена"
     } else {
-        # На чужую машину модель не скачать — только попросить владельца
-        Fail "$model нет на сервере $ollamaBase. Загрузите её там: ollama pull $model"
+        # Загрузить модель на чужой сервер мы не можем — только попросить
+        Fail "$model нет на сервере $ollamaBase. Её нужно загрузить там: ollama pull $model"
     }
 }
 
 # Размерность вектора обязана совпасть с коллекцией, иначе поиск молча врёт
 try {
     $body = [Text.Encoding]::UTF8.GetBytes("{`"model`":`"$embedModel`",`"input`":[`"проверка`"]}")
-    $resp = Invoke-RestMethod -Method Post -Uri "$ollamaBase/v1/embeddings" `
+    $resp = Invoke-RestMethod -Method Post -Uri "$ollamaProbe/v1/embeddings" `
         -ContentType "application/json" -Headers $headers -Body $body -TimeoutSec 600
     Ok "эмбеддер отвечает, размерность вектора: $($resp.data[0].embedding.Count)"
 } catch {

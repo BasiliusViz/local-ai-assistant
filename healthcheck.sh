@@ -26,20 +26,16 @@ ok()   { echo "  ${GREEN}[ok]${NC}    $*"; }
 bad()  { echo "  ${RED}[нет]${NC}   $*"; problems=$((problems + 1)); }
 warn() { echo "  ${YELLOW}[!]${NC}     $*"; }
 
-# Ollama бывает внешней (на машине с GPU) — тогда её контейнера здесь нет,
-# и это нормально. Определяем по адресу из .env
-OLLAMA_BASE="${OLLAMA_URL:-http://localhost:${OLLAMA_PORT}/v1}"
+# Модель всегда внешняя: её контейнера здесь нет и быть не должно
+OLLAMA_BASE="${OLLAMA_URL:-}"
 OLLAMA_BASE="${OLLAMA_BASE%/v1}"
 OLLAMA_BASE="${OLLAMA_BASE%/}"
-case "$OLLAMA_BASE" in
-    *localhost*|*127.0.0.1*|*//ollama*) OLLAMA_LOCAL=1; where="локальная" ;;
-    *) OLLAMA_LOCAL=0; where="внешняя" ;;
-esac
+# host.docker.internal понимают только контейнеры; скрипт работает на хосте,
+# для него это localhost. Актуально, когда модель крутится на этой же машине
+OLLAMA_PROBE="${OLLAMA_BASE/host.docker.internal/localhost}"
 
 echo "=== Контейнеры ==="
-names="qdrant kb code-graph"
-[ "$OLLAMA_LOCAL" = "1" ] && names="ollama $names"
-for name in $names; do
+for name in qdrant kb code-graph; do
     state=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null)
     case "$state" in
         running) ok "$name работает" ;;
@@ -58,11 +54,11 @@ AUTH=""
 if [ -n "${OLLAMA_API_KEY:-}" ]; then
     AUTH="${OLLAMA_AUTH_HEADER:-Authorization}: ${OLLAMA_AUTH_PREFIX-Bearer }${OLLAMA_API_KEY}"
 fi
-models=$(curl -s ${AUTH:+-H "$AUTH"} "${OLLAMA_BASE}/api/tags" 2>/dev/null)
+models=$(curl -s ${AUTH:+-H "$AUTH"} "${OLLAMA_PROBE}/api/tags" 2>/dev/null)
 if [ -n "$models" ]; then
-    ok "Ollama (${where}): ${OLLAMA_BASE}"
+    ok "модель: ${OLLAMA_BASE}"
 else
-    bad "Ollama (${where}) недоступна по адресу ${OLLAMA_BASE}"
+    bad "сервер с моделью недоступен (${OLLAMA_BASE:-OLLAMA_URL не задан})"
 fi
 
 echo
@@ -71,23 +67,11 @@ for model in "${GEN_MODEL}" "${EMBED_MODEL}"; do
     if echo "$models" | grep -q "${model%%:*}"; then
         ok "$model"
     elif [ -n "$models" ]; then
-        bad "$model не найдена на сервере Ollama"
+        bad "$model не найдена на сервере с моделью"
     else
         bad "$model — не удалось получить список моделей"
     fi
 done
-
-# Обе модели должны помещаться в память ОДНОВРЕМЕННО, иначе каждый запрос
-# оплачивает перезагрузку с диска — самая частая причина «всё тормозит».
-# Проверяем только у локальной: на чужой машине это не наша забота
-if [ "$OLLAMA_LOCAL" = "1" ]; then
-    loaded=$(docker exec ollama ollama ps 2>/dev/null | tail -n +2 | grep -c . || true)
-    if [ "${loaded:-0}" -ge 2 ]; then
-        ok "в памяти моделей: $loaded"
-    else
-        warn "в памяти моделей: ${loaded:-0}. После простоя это нормально; если так во время работы — проверьте OLLAMA_MAX_LOADED_MODELS и объём GPU"
-    fi
-fi
 
 echo
 echo "=== Данные ==="
