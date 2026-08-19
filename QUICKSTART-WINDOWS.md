@@ -43,19 +43,20 @@ D:\local-ai\docs\
 
 ### Выгрузка из Confluence
 
-```powershell
-pip install -r confluence\requirements.txt
-copy confluence\.env.example confluence\.env
-notepad confluence\.env
-```
-
-Заполнить:
+Настройки — в том же `.env`, что и весь остальной стек, отдельного файла нет:
 
 ```
 CONFLUENCE_URL=https://wiki.company.local
 CONFLUENCE_TOKEN=ваш-PAT-токен
 CONFLUENCE_PAGES=123456
 CONFLUENCE_OUT=D:\local-ai\docs\confluence
+```
+
+`CONFLUENCE_OUT` должен быть **внутри** `DOCS_DIR` — иначе контейнер не увидит
+выгруженные файлы при индексации.
+
+```powershell
+pip install -r confluence\requirements.txt
 ```
 
 `CONFLUENCE_PAGES` — идентификатор **корневой страницы**, виден в её адресе:

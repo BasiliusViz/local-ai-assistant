@@ -12,11 +12,13 @@
   - сохраняет сырой ответ API для разбора проблем (--dump-raw)
   - объясняет ошибки словами, а не трейсбеком
 
-Настройка (переменные окружения или .env рядом со скриптом):
+Настройки берутся из .env в корне проекта — того же, где живёт весь остальной
+стек. Отдельный confluence/.env тоже читается, если он есть, но обычно не нужен.
+
     CONFLUENCE_URL     https://wiki.company.local
     CONFLUENCE_TOKEN   personal access token
     CONFLUENCE_PAGES   123456,789012   идентификаторы корневых страниц
-    CONFLUENCE_OUT     ./confluence/pages
+    CONFLUENCE_OUT     куда складывать (по умолчанию ./confluence/pages)
 
 Использование:
     python confluence/sync.py --check       проверить связь и посчитать страницы
@@ -57,16 +59,24 @@ def state_file(out_dir: Path) -> Path:
 
 
 def load_env() -> None:
-    """Читает .env рядом со скриптом, не перетирая уже заданные переменные."""
-    env_file = HERE / ".env"
-    if not env_file.exists():
-        return
-    for line in env_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    """Читает настройки из .env проекта.
+
+    Ищет в двух местах, в таком порядке: рядом со скриптом (confluence/.env)
+    и в корне проекта (../.env). Достаточно ОДНОГО файла — обычно корневого,
+    там же лежат остальные настройки стека, и не приходится держать токены
+    в двух местах.
+
+    Уже заданные переменные окружения не перетираются: они важнее файла.
+    """
+    for env_file in (HERE / ".env", HERE.parent / ".env"):
+        if not env_file.exists():
             continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 class ConfluenceError(RuntimeError):
@@ -229,9 +239,8 @@ def main() -> int:
 
     if not url or not token:
         print("Не заданы CONFLUENCE_URL и CONFLUENCE_TOKEN.")
-        print("  - в развёрнутой системе: пропишите их в .env проекта, они")
-        print("    передаются в контейнер (docker compose up -d kb после правки)")
-        print(f"  - при запуске вручную: создайте {HERE / '.env'} по образцу")
+        print(f"Пропишите их в {HERE.parent / '.env'} — там же, где остальные")
+        print("настройки стека. После правки: docker compose up -d kb")
         return 2
 
     client = Client(url, token)

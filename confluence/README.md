@@ -24,13 +24,21 @@ pip install -r confluence/requirements.txt
 
 **1. Настроить доступ**
 
-```bash
-cp .env.example .env
+Всё пишется в **`.env` в корне проекта** — там же, где настройки остального
+стека. Отдельного файла для Confluence нет:
+
+```
+CONFLUENCE_URL=https://wiki.company.local
+CONFLUENCE_TOKEN=ваш-PAT-токен
+CONFLUENCE_PAGES=123456
+CONFLUENCE_OUT=/srv/local-ai/docs/confluence
 ```
 
-Заполнить `CONFLUENCE_URL` и `CONFLUENCE_TOKEN`. Токен создаётся в Confluence:
-профиль → Personal Access Tokens. Это не пароль. Уходит заголовком
-`Authorization: Bearer` — так его ждёт Server и Data Center.
+Токен создаётся в Confluence: профиль → Personal Access Tokens. Это не пароль.
+Уходит заголовком `Authorization: Bearer` — так его ждёт Server и Data Center.
+
+`CONFLUENCE_OUT` должен быть внутри `DOCS_DIR`, иначе контейнер не увидит
+выгруженные файлы при индексации.
 
 **Что выгружать:** `CONFLUENCE_PAGES=123456,789012` — идентификаторы корневых
 страниц. Забирается сама страница и **всё поддерево под ней на любой глубине**.
