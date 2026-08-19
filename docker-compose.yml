@@ -56,6 +56,9 @@ services:
       # ${VAR:-default} подменило бы его на Bearer. Для шлюзов с x-api-key
       # префикс должен быть пустым, иначе уходит "x-api-key: Bearer <ключ>"
       - KB_OLLAMA_AUTH_PREFIX=${OLLAMA_AUTH_PREFIX-Bearer }
+      # openai (по умолчанию) или native: некоторые шлюзы пробрасывают только
+      # родное API Ollama (/api/embed, /api/chat), а /v1 закрыт
+      - KB_OLLAMA_API=${OLLAMA_API:-openai}
       # Выгрузка Confluence запускается в этом же контейнере:
       #   docker compose exec kb python confluence/sync.py --check
       - CONFLUENCE_URL=${CONFLUENCE_URL:-}

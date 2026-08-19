@@ -24,6 +24,29 @@ def auth_headers() -> dict[str, str]:
         return {}
     return {OLLAMA_AUTH_HEADER: f"{OLLAMA_AUTH_PREFIX}{OLLAMA_API_KEY}"}
 
+
+# Какое API дёргать: OpenAI-совместимое (/v1/embeddings, /v1/chat/completions)
+# или родное для Ollama (/api/embed, /api/chat). Шлюзы иногда пробрасывают
+# только одно из двух. По умолчанию OpenAI-совместимое — задел на переезд
+# с Ollama на vLLM, где родного API нет вовсе.
+OLLAMA_API = os.getenv("KB_OLLAMA_API", "openai").strip().lower()
+
+# База без /v1 — нужна для родных путей
+OLLAMA_BASE = OLLAMA_URL[:-3] if OLLAMA_URL.endswith("/v1") else OLLAMA_URL
+OLLAMA_BASE = OLLAMA_BASE.rstrip("/")
+
+
+def embeddings_url() -> str:
+    if OLLAMA_API == "native":
+        return f"{OLLAMA_BASE}/api/embed"
+    return f"{OLLAMA_URL}/embeddings"
+
+
+def chat_url() -> str:
+    if OLLAMA_API == "native":
+        return f"{OLLAMA_BASE}/api/chat"
+    return f"{OLLAMA_URL}/chat/completions"
+
 # Qdrant
 QDRANT_URL = os.getenv("KB_QDRANT_URL", "http://localhost:6333")
 COLLECTION = os.getenv("KB_COLLECTION", "knowledge")

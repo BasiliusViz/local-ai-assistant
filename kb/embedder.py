@@ -23,29 +23,42 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
 
+    url = config.embeddings_url()
     try:
         resp = httpx.post(
-            f"{config.OLLAMA_URL}/embeddings",
+            url,
             json={"model": config.EMBED_MODEL, "input": texts},
             headers=config.auth_headers(),
             timeout=config.HTTP_TIMEOUT,
         )
         if resp.status_code in (401, 403):
             raise EmbedError(
-                f"{resp.status_code}: доступ к {config.OLLAMA_URL} не разрешён. "
+                f"{resp.status_code}: доступ к {url} не разрешён. "
                 "Задайте KB_OLLAMA_API_KEY; если шлюз ждёт ключ в другом "
-                "заголовке — KB_OLLAMA_AUTH_HEADER и KB_OLLAMA_AUTH_PREFIX"
+                "заголовке — KB_OLLAMA_AUTH_HEADER и KB_OLLAMA_AUTH_PREFIX "
+                "(для x-api-key префикс должен быть пустым)"
+            )
+        if resp.status_code == 404:
+            raise EmbedError(
+                f"404: пути {url} нет. Возможно, шлюз пробрасывает только "
+                "родное API Ollama — тогда задайте KB_OLLAMA_API=native "
+                "(или OLLAMA_API=native в .env)"
             )
         resp.raise_for_status()
     except httpx.HTTPError as e:
         raise EmbedError(
-            f"Не удалось получить эмбеддинги с {config.OLLAMA_URL}: {e}. "
-            f"Проверь, что контейнер ollama запущен и модель "
-            f"{config.EMBED_MODEL} загружена."
+            f"Не удалось получить эмбеддинги с {url}: {e}. "
+            f"Проверьте доступность сервера и что модель "
+            f"{config.EMBED_MODEL} на нём есть."
         ) from e
 
-    data = resp.json().get("data", [])
-    vectors = [item["embedding"] for item in data]
+    payload = resp.json()
+    # Форматы ответа разные: OpenAI-совместимый отдаёт data[].embedding,
+    # родное API Ollama — embeddings[]
+    if config.OLLAMA_API == "native":
+        vectors = payload.get("embeddings", [])
+    else:
+        vectors = [item["embedding"] for item in payload.get("data", [])]
 
     if len(vectors) != len(texts):
         raise EmbedError(

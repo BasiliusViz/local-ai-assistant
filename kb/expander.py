@@ -59,32 +59,47 @@ def expand(query: str) -> list[str]:
     if not config.EXPAND:
         return [query]
 
+    messages = [
+        {"role": "user", "content": PROMPT.format(query=query, n=config.EXPAND_VARIANTS)}
+    ]
+    # Нулевая температура: при 0.3 переформулировки менялись от запуска к
+    # запуску, и один и тот же вопрос то находился, то нет. Воспроизводимость
+    # здесь важнее разнообразия — его обеспечивают сами варианты запроса.
+    # reasoning_effort=none обязателен: иначе модель уходит в рассуждения и
+    # тратит минуту вместо секунды.
+    if config.OLLAMA_API == "native":
+        body = {
+            "model": config.EXPAND_MODEL,
+            "messages": messages,
+            "stream": False,
+            "format": "json",
+            "think": False,
+            "options": {"temperature": 0},
+        }
+    else:
+        body = {
+            "model": config.EXPAND_MODEL,
+            "messages": messages,
+            "response_format": {"type": "json_object"},
+            "reasoning_effort": "none",
+            "temperature": 0,
+        }
+
     try:
         resp = httpx.post(
-            f"{config.OLLAMA_URL}/chat/completions",
-            json={
-                "model": config.EXPAND_MODEL,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": PROMPT.format(
-                            query=query, n=config.EXPAND_VARIANTS
-                        ),
-                    }
-                ],
-                "response_format": {"type": "json_object"},
-                "reasoning_effort": "none",
-                # Нулевая температура: при 0.3 переформулировки менялись от
-                # запуска к запуску, и один и тот же вопрос то находился, то
-                # нет. Воспроизводимость здесь важнее разнообразия -
-                # разнообразие уже обеспечено тремя вариантами запроса
-                "temperature": 0,
-            },
+            config.chat_url(),
+            json=body,
             headers=config.auth_headers(),
             timeout=config.EXPAND_TIMEOUT,
         )
         resp.raise_for_status()
-        raw = resp.json()["choices"][0]["message"]["content"]
+        payload = resp.json()
+        # Формат ответа: родное API кладёт текст в message.content,
+        # OpenAI-совместимое — в choices[0].message.content
+        if config.OLLAMA_API == "native":
+            raw = payload["message"]["content"]
+        else:
+            raw = payload["choices"][0]["message"]["content"]
         variants = json.loads(raw).get("queries", [])
     except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
         # Расширение — улучшение, а не необходимость
