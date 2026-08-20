@@ -162,10 +162,20 @@ def _text_chunks(path: Path, source: str) -> list[dict]:
 
 
 def collect(root: Path) -> list[dict]:
-    """Все чанки всех репозиториев внутри root."""
+    """Все чанки всех репозиториев внутри root.
+
+    По ходу печатает, что взято, а что отброшено. Молчаливый обход слишком
+    легко принять за поломку: фильтр по типам файлов узкий, и проект, где
+    лежат одни .ps1, даёт ноль чанков — по виду неотличимо от «не зашёл в
+    подкаталоги».
+    """
     items = []
+    # Расширения, отброшенные по типу: подсказка, что дописать в TEXT_SUFFIXES
+    skipped_ext: dict[str, int] = {}
     for repo_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         repo = repo_dir.name
+        seen = taken = by_name = 0
+        before = len(items)
         # os.walk, а не rglob: в репозиториях встречаются симлинки на
         # несуществующие цели (тесты с сертификатами, подмодули). Windows даёт
         # на них WinError 1920, и rglob обрывает обход всего репозитория.
@@ -175,11 +185,15 @@ def collect(root: Path) -> list[dict]:
             for filename in filenames:
                 path = Path(dirpath) / filename
                 if _skip(path.relative_to(repo_dir)):
+                    by_name += 1
                     continue
+                seen += 1
 
                 is_py = path.suffix == ".py"
                 is_text = path.name in TEXT_FILES or path.suffix in TEXT_SUFFIXES
                 if not (is_py or is_text):
+                    ext = path.suffix.lower() or "(без расширения)"
+                    skipped_ext[ext] = skipped_ext.get(ext, 0) + 1
                     continue
 
                 try:
@@ -195,10 +209,24 @@ def collect(root: Path) -> list[dict]:
                     if is_py
                     else _text_chunks(path, source)
                 )
+                taken += 1
                 for chunk in found:
                     chunk["repo"] = repo
                     chunk["path"] = rel
                     items.append(chunk)
+
+        note = f", отброшено как тесты: {by_name}" if by_name else ""
+        print(
+            f"--- {repo}: подходящих файлов {taken} из {seen}{note}, "
+            f"чанков {len(items) - before}"
+        )
+
+    if skipped_ext:
+        top = sorted(skipped_ext.items(), key=lambda kv: -kv[1])[:12]
+        print("\nПропущено по типу файла (в индекс не попало):")
+        for ext, count in top:
+            print(f"  {ext}: {count}")
+        print("Нужные типы дописать в TEXT_SUFFIXES в kb/code_index.py.")
     return items
 
 
