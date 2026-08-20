@@ -25,7 +25,10 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "=== 2/2. Векторный индекс кода ===" -ForegroundColor Cyan
-docker compose exec -T kb python -m kb.code_index /data/repos
+# /data, а не /data/repos: когда CODE_REPOS пустая и проекты лежат прямо в
+# CODE_DIR, каталог repos/ не создаётся вовсе, и жёсткий путь давал
+# "Не каталог: /data/repos". code_index сам спускается в repos/, если она есть
+docker compose exec -T kb python -m kb.code_index /data
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Индексация кода не удалась." -ForegroundColor Red
     exit 1

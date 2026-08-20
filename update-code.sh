@@ -20,7 +20,10 @@ fi
 
 echo
 echo "=== 2/2. Векторный индекс кода ==="
-if ! docker compose exec -T kb python -m kb.code_index /data/repos; then
+# /data, а не /data/repos: когда CODE_REPOS пустая и проекты лежат прямо в
+# CODE_DIR, каталог repos/ не создаётся вовсе, и жёсткий путь давал
+# "Не каталог: /data/repos". code_index сам спускается в repos/, если она есть
+if ! docker compose exec -T kb python -m kb.code_index /data; then
     echo "Индексация кода не удалась." >&2
     exit 1
 fi
