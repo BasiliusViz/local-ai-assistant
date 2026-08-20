@@ -108,28 +108,17 @@ python confluence\sync.py             # выгрузка
 
 ## 6. Подключить пользователей
 
-В `~/.continue/config.yaml` на машине каждого:
+Скопировать `continue-config.example.yaml` целиком в `~/.continue/config.yaml`
+на машине каждого (Windows: `C:\Users\<логин>\.continue\config.yaml`) и
+заменить в нём `АДРЕС-OLLAMA`, `АДРЕС-СЕРВЕРА` и `ТОКЕН`. Правила из
+`continue-rules.yaml` там уже внутри — без них модель отвечает сплошным
+текстом, не ссылается на источники и иногда выдумывает.
 
-```yaml
-models:
-  - name: Ассистент
-    provider: ollama
-    model: qwen3:8b
-    apiBase: http://АДРЕС-OLLAMA:11434
-    apiKey: ТОКЕН        # если Ollama за шлюзом
-    roles: [chat, edit]
-
-mcpServers:
-  - name: knowledge-base
-    type: streamable-http
-    url: http://АДРЕС-СЕРВЕРА:8010/mcp
-  - name: code-graph
-    type: streamable-http
-    url: http://АДРЕС-СЕРВЕРА:8011/mcp
-```
-
-Плюс скопировать туда содержимое `continue-rules.yaml` — без правил модель
-отвечает сплошным текстом, не ссылается на источники и иногда выдумывает.
+**Токен задаётся через `requestOptions.headers`, а не через `apiKey`.**
+`apiKey` уходит как `Authorization: Bearer <токен>`, а шлюз ждёт заголовок
+`x-api-key` — с ним запросы к модели будут отбиваться. Continue ходит в
+модель напрямую, мимо `kb`, поэтому настройки из `.env` на него не
+распространяются.
 
 **Инструменты работают только в режиме Agent** (переключатель внизу окна чата).
 После правки конфига — **полный перезапуск VS Code**, перезагрузки окна мало.
