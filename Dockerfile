@@ -5,9 +5,17 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Зеркало PyPI для сетей без доступа к pypi.org. Пустое по умолчанию -
+# тогда идём напрямую. Задаётся в .env, compose прокидывает сюда как build-arg
+ARG PIP_INDEX_URL=""
+ARG PIP_TRUSTED_HOST=""
+
 # Зависимости отдельным слоем: правки кода не тянут переустановку пакетов
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir \
+    ${PIP_INDEX_URL:+--index-url "$PIP_INDEX_URL"} \
+    ${PIP_TRUSTED_HOST:+--trusted-host "$PIP_TRUSTED_HOST"} \
+    -r requirements.txt
 
 COPY kb/ ./kb/
 # Выгрузка Confluence живёт здесь же: на сервере не нужен Python, всё
