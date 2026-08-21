@@ -134,13 +134,18 @@ fi
 # ---------- 5. код ----------
 step "5/6. Код"
 
-if [ -z "${CODE_REPOS:-}" ]; then
-    warn "CODE_REPOS пуста — поиск по коду и граф отключены"
-    warn "укажите репозитории в .env и запустите ./update-code.sh"
+# Пустая CODE_REPOS не означает "кода нет": репозитории можно просто положить
+# в CODE_DIR, sync.sh эту раскладку умеет. Пропускаем шаг, только когда брать
+# действительно нечего, иначе стек разворачивается молча без поиска по коду
+if [ -z "${CODE_REPOS:-}" ] && [ -z "$(ls -A "${CODE_DIR}" 2>/dev/null)" ]; then
+    warn "CODE_REPOS пуста и ${CODE_DIR} пуст — поиск по коду и граф отключены"
+    warn "положите код в ${CODE_DIR} либо укажите CODE_REPOS в .env, затем ./update-code.sh"
 else
     compose exec -T code-graph /app/sync.sh || fail "синхронизация репозиториев не удалась"
-    compose exec -T kb python -m kb.code_index /data/repos || fail "индексация кода не удалась"
-    ok "репозитории склонированы, граф построен, код проиндексирован"
+    # /data, а не /data/repos: каталог repos/ появляется только при клонировании
+    # по CODE_REPOS. code_index сам спускается в repos/, если она есть
+    compose exec -T kb python -m kb.code_index /data || fail "индексация кода не удалась"
+    ok "граф построен, код проиндексирован"
 fi
 
 # ---------- 6. проверка ----------
@@ -151,14 +156,15 @@ step "6/6. Проверка"
 echo
 echo "${GREEN}Развёртывание завершено.${NC}"
 echo
-echo "Подключение в VS Code (Continue), ~/.continue/config.yaml:"
+echo "Подключение в VS Code (Continue):"
+echo "  скопируйте continue-config.example.yaml в ~/.continue/config.yaml"
+echo "  и замените в нём адреса и токен:"
 echo
-echo "  mcpServers:"
-echo "    - name: knowledge-base"
-echo "      type: streamable-http"
-echo "      url: http://<адрес-сервера>:${KB_PORT:-8010}/mcp"
-echo "    - name: code-graph"
-echo "      type: streamable-http"
-echo "      url: http://<адрес-сервера>:${CODE_GRAPH_PORT:-8011}/mcp"
+echo "    АДРЕС-СЕРВЕРА  -> эта машина, порты ${KB_PORT:-8010} и ${CODE_GRAPH_PORT:-8011}"
+echo "    АДРЕС-OLLAMA   -> ${OLLAMA_BASE}"
+echo "    ТОКЕН          -> ключ шлюза, в поле requestOptions.headers"
+echo
+echo "Токен задаётся ТОЛЬКО через requestOptions.headers: apiKey уходит как"
+echo "\"Authorization: Bearer\", а шлюз с x-api-key такой запрос отобьёт."
 echo
 echo "Обновление данных: ./update-code.sh (код), docker compose exec kb python -m kb.doc_index /docs --source local (документы)"

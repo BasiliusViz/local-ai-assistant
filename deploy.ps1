@@ -150,15 +150,21 @@ if ($docCount -eq 0) {
 # ---------- 5. код ----------
 Step "5/6. Код"
 
-if (-not $cfg.CODE_REPOS) {
-    Warn "CODE_REPOS пуста — поиск по коду и граф отключены"
-    Warn "укажите репозитории в .env и запустите .\update-code.ps1"
+# Пустая CODE_REPOS не означает "кода нет": репозитории можно просто положить
+# в CODE_DIR, sync.sh эту раскладку умеет. Пропускаем шаг, только когда брать
+# действительно нечего, иначе стек разворачивается молча без поиска по коду
+$codeEmpty = -not (Get-ChildItem -Force -ErrorAction SilentlyContinue $cfg.CODE_DIR)
+if ((-not $cfg.CODE_REPOS) -and $codeEmpty) {
+    Warn "CODE_REPOS пуста и $($cfg.CODE_DIR) пуст — поиск по коду и граф отключены"
+    Warn "положите код в $($cfg.CODE_DIR) либо укажите CODE_REPOS в .env, затем .\update-code.ps1"
 } else {
     docker compose exec -T code-graph /app/sync.sh
     if ($LASTEXITCODE -ne 0) { Fail "синхронизация репозиториев не удалась" }
-    docker compose exec -T kb python -m kb.code_index /data/repos
+    # /data, а не /data/repos: каталог repos/ появляется только при клонировании
+    # по CODE_REPOS. code_index сам спускается в repos/, если она есть
+    docker compose exec -T kb python -m kb.code_index /data
     if ($LASTEXITCODE -ne 0) { Fail "индексация кода не удалась" }
-    Ok "репозитории склонированы, граф построен, код проиндексирован"
+    Ok "граф построен, код проиндексирован"
 }
 
 # ---------- 6. проверка ----------
@@ -170,15 +176,15 @@ if ($LASTEXITCODE -ne 0) { Fail "проверка не пройдена, см. �
 Write-Host ""
 Write-Host "Развёртывание завершено." -ForegroundColor Green
 Write-Host ""
-Write-Host "Подключение в VS Code (Continue), ~/.continue/config.yaml:"
+Write-Host "Подключение в VS Code (Continue):"
+Write-Host "  скопируйте continue-config.example.yaml в ~/.continue/config.yaml"
+Write-Host "  и замените в нём адреса и токен:"
 Write-Host ""
-Write-Host "  mcpServers:"
-Write-Host "    - name: knowledge-base"
-Write-Host "      type: streamable-http"
-Write-Host "      url: http://localhost:$kbPort/mcp"
-Write-Host "    - name: code-graph"
-Write-Host "      type: streamable-http"
-Write-Host "      url: http://localhost:$graphPort/mcp"
+Write-Host "    АДРЕС-СЕРВЕРА  -> эта машина, порты $kbPort и $graphPort"
+Write-Host "    АДРЕС-OLLAMA   -> $ollamaBase"
+Write-Host "    ТОКЕН          -> ключ шлюза, в поле requestOptions.headers"
 Write-Host ""
-Write-Host "Правила ответов: скопируйте содержимое continue-rules.yaml в тот же файл."
+Write-Host "Токен задаётся ТОЛЬКО через requestOptions.headers: apiKey уходит как"
+Write-Host '"Authorization: Bearer", а шлюз с x-api-key такой запрос отобьёт.'
+Write-Host "Правила ответов уже внутри примера конфига."
 Write-Host "Инструменты работают только в режиме Agent."
