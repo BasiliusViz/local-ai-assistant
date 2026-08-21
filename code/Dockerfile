@@ -55,7 +55,13 @@ ARG APT_SUITES="trixie"
 # и указать его в Signed-By. Тогда здесь ставится "no" и проверка возвращается
 ARG APT_TRUSTED="yes"
 
-ARG PIP_INDEX_URL=""
+# PyPI напрямую недоступен, идём через внутренний Nexus. Хвост /simple
+# обязателен: без него pip получает 404.
+# Пустое значение вернёт обращение к pypi.org напрямую
+ARG PIP_INDEX_URL="https://nexus.rnd.aip.ooo/repository/pypi-proxy/simple"
+# Заполнять, только если у зеркала сертификат внутреннего УЦ: тогда pip
+# перестанет проверять TLS для этого хоста. Nexus отвечает по валидному
+# сертификату, поэтому пусто
 ARG PIP_TRUSTED_HOST=""
 
 # Debian trixie держит источники в формате deb822, а не в sources.list.
