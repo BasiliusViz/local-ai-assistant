@@ -65,6 +65,13 @@ services:
       - CONFLUENCE_TOKEN=${CONFLUENCE_TOKEN:-}
       - CONFLUENCE_PAGES=${CONFLUENCE_PAGES:-}
       - CONFLUENCE_OUT=/docs/confluence
+    # host.docker.internal (модель на этой же машине) сам по себе есть только
+    # в Docker Desktop. На Linux с обычным Docker Engine имя не резолвится, и
+    # kb молча теряет доступ к модели — при том что deploy.sh и healthcheck.sh
+    # проверяют её С ХОСТА, подменяя имя на localhost, и рапортуют зелёным.
+    # host-gateway закрывает эту разницу; в Docker Desktop строка безвредна
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       # Только Qdrant: Ollama обычно внешняя, и ждать её контейнер бессмысленно
       - qdrant
