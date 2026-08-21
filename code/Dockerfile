@@ -3,20 +3,29 @@
 
 FROM python:3.11-slim
 
-# Зеркала для сетей без доступа к deb.debian.org и pypi.org. Пустые по
-# умолчанию - тогда идём напрямую. Задаются в .env, compose прокидывает их
-# сюда как build-args. APT_MIRROR - только хост (например mirror.yandex.ru):
-# подменяется deb.debian.org в обоих источниках, включая -security
-# Значение по умолчанию - зеркало Яндекса: deb.debian.org недоступен из России.
-# Пустая строка вернёт обращение напрямую, любое другое зеркало - подставить сюда
-ARG APT_MIRROR="mirror.yandex.ru"
+# Откуда брать пакеты Debian: deb.debian.org снаружи недоступен, идём через
+# внутренний Nexus. Адреса задаются ЦЕЛИКОМ, а не одним хостом — у Nexus путь
+# вида /repository/<имя>, одной подменой хоста такой адрес не собрать.
+#
+# Источников в образе ДВА, и security — обязательный: если перенаправить
+# только основной, apt-get update всё равно полезет наружу за -security и
+# упадёт. В Nexus это РАЗНЫЕ репозитории, а не один с двумя путями.
+#
+# Проверено ./check-nexus.sh: trixie отдаёт apt-docker-debian (200),
+# trixie-security — debian-security (200). Основной взаимозаменяем с
+# debian-repo, тот тоже отвечает 200
+ARG APT_URI="https://nexus.rnd.aip.ooo/repository/apt-docker-debian"
+ARG APT_SECURITY_URI="https://nexus.rnd.aip.ooo/repository/debian-security"
 ARG PIP_INDEX_URL=""
 ARG PIP_TRUSTED_HOST=""
 
-# Debian trixie держит источники в формате deb822, а не в sources.list
-RUN if [ -n "$APT_MIRROR" ]; then \
-        sed -i "s|deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
-    fi \
+# Debian trixie держит источники в формате deb822, а не в sources.list.
+# Порядок замен важен: -security идёт первой, иначе более короткий шаблон
+# съест её префикс и security-адрес окажется битым
+RUN sed -i \
+        -e "s|http://deb.debian.org/debian-security|$APT_SECURITY_URI|g" \
+        -e "s|http://deb.debian.org/debian|$APT_URI|g" \
+        /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
