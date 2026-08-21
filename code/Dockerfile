@@ -24,6 +24,19 @@ ARG APT_SECURITY_URI="https://nexus.rnd.aip.ooo/repository/debian-security"
 # На пакеты это не влияет: trixie-updates добирает точечные обновления между
 # минорными выпусками, база целиком лежит в trixie
 ARG APT_SUITES="trixie"
+
+# ОСОЗНАННОЕ ОСЛАБЛЕНИЕ. Внутренний Nexus подписывает метаданные ключом
+# компании (7EA0A9C3F273FCD8), а в образе только официальные ключи Debian —
+# проверка подписи не пройдёт никогда, сборка падает на "is not signed".
+# Trusted: yes велит apt не проверять подпись этого источника.
+#
+# Чем платим: apt перестаёт замечать подмену пакетов. Остаётся только защита
+# транспорта (https до Nexus) и доверие к самому Nexus как к источнику.
+#
+# Правильное решение - положить публичный ключ компании в /usr/share/keyrings
+# и указать его в Signed-By. Тогда здесь ставится "no" и проверка возвращается
+ARG APT_TRUSTED="yes"
+
 ARG PIP_INDEX_URL=""
 ARG PIP_TRUSTED_HOST=""
 
@@ -35,6 +48,9 @@ RUN sed -i \
         -e "s|http://deb.debian.org/debian|$APT_URI|g" \
         -e "s|^Suites: trixie trixie-updates$|Suites: $APT_SUITES|" \
         /etc/apt/sources.list.d/debian.sources \
+    && if [ "$APT_TRUSTED" = "yes" ]; then \
+           sed -i "s|^Signed-By: .*|&\nTrusted: yes|" /etc/apt/sources.list.d/debian.sources; \
+       fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
