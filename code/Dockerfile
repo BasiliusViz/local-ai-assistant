@@ -3,6 +3,24 @@
 
 FROM python:3.11-slim
 
+# Нужен ли git в образе. По умолчанию НЕТ — и тогда apt не задействован вовсе,
+# а значит не нужны ни зеркала, ни ключи подписи, ни доступ к deb.debian.org.
+#
+# git здесь используется ровно в двух местах, и оба необязательные:
+#   1. sync.sh клонирует репозитории из CODE_REPOS. Если она пуста и код лежит
+#      прямо в CODE_DIR, клонировать нечего.
+#   2. graphify зовёт "git ls-files", чтобы не фильтровать по .gitignore то,
+#      что уже в индексе. Отсутствие git он обрабатывает сам: см. docstring
+#      _git_tracked_path_keys в graphify/detect.py — "Missing Git ... fail
+#      closed to the historical ignore behavior rather than making discovery
+#      fail". Разбор кода от этого не страдает.
+#
+# Ставить в "yes" нужно, только если заполняете CODE_REPOS. Тогда же
+# понадобятся и настройки apt ниже
+ARG INSTALL_GIT="no"
+
+# --- всё, что ниже, работает только при INSTALL_GIT=yes ---
+#
 # Откуда брать пакеты Debian: deb.debian.org снаружи недоступен, идём через
 # внутренний Nexus. Адреса задаются ЦЕЛИКОМ, а не одним хостом — у Nexus путь
 # вида /repository/<имя>, одной подменой хоста такой адрес не собрать.
@@ -43,17 +61,21 @@ ARG PIP_TRUSTED_HOST=""
 # Debian trixie держит источники в формате deb822, а не в sources.list.
 # Порядок замен важен: -security идёт первой, иначе более короткий шаблон
 # съест её префикс и security-адрес окажется битым
-RUN sed -i \
-        -e "s|http://deb.debian.org/debian-security|$APT_SECURITY_URI|g" \
-        -e "s|http://deb.debian.org/debian|$APT_URI|g" \
-        -e "s|^Suites: trixie trixie-updates$|Suites: $APT_SUITES|" \
-        /etc/apt/sources.list.d/debian.sources \
-    && if [ "$APT_TRUSTED" = "yes" ]; then \
-           sed -i "s|^Signed-By: .*|&\nTrusted: yes|" /etc/apt/sources.list.d/debian.sources; \
-       fi \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+RUN if [ "$INSTALL_GIT" = "yes" ]; then \
+        sed -i \
+            -e "s|http://deb.debian.org/debian-security|$APT_SECURITY_URI|g" \
+            -e "s|http://deb.debian.org/debian|$APT_URI|g" \
+            -e "s|^Suites: trixie trixie-updates$|Suites: $APT_SUITES|" \
+            /etc/apt/sources.list.d/debian.sources \
+        && if [ "$APT_TRUSTED" = "yes" ]; then \
+               sed -i "s|^Signed-By: .*|&\nTrusted: yes|" /etc/apt/sources.list.d/debian.sources; \
+           fi \
+        && apt-get update \
+        && apt-get install -y --no-install-recommends git ca-certificates \
+        && rm -rf /var/lib/apt/lists/*; \
+    else \
+        echo "git не ставится (INSTALL_GIT=$INSTALL_GIT) - apt не задействован"; \
+    fi
 
 # [mcp] обязателен: без него HTTP-транспорт не поднимется (нужны
 # mcp + starlette + uvicorn), а stdio нам не подходит - сервер в контейнере
