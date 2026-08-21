@@ -30,7 +30,14 @@ services:
   # MCP-сервер поиска: kb_search (документы) + code_search (код).
   # К нему подключается Continue.
   kb:
-    build: .
+    build:
+      context: .
+      # Зеркало PyPI для сетей без выхода на pypi.org. Пустые значения —
+      # идём напрямую. Адреса живут в .env, а не в Dockerfile: у каждой
+      # площадки они свои, и в репозиторий им попадать незачем
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
     container_name: kb
     restart: unless-stopped
     ports:
@@ -80,7 +87,18 @@ services:
   # Отдельный сервер намеренно: код и документация — разные источники,
   # и код можно выключить, не трогая поиск по документации.
   code-graph:
-    build: ./code
+    build:
+      context: ./code
+      # Здесь кроме PyPI ещё и apt — но только если INSTALL_GIT=yes.
+      # По умолчанию git не ставится и apt не задействован вовсе
+      args:
+        INSTALL_GIT: ${INSTALL_GIT:-no}
+        APT_URI: ${APT_URI:-http://deb.debian.org/debian}
+        APT_SECURITY_URI: ${APT_SECURITY_URI:-http://deb.debian.org/debian-security}
+        APT_SUITES: ${APT_SUITES:-trixie trixie-updates}
+        APT_TRUSTED: ${APT_TRUSTED:-no}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
     container_name: code-graph
     restart: unless-stopped
     ports:
