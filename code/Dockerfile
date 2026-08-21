@@ -16,6 +16,14 @@ FROM python:3.11-slim
 # debian-repo, тот тоже отвечает 200
 ARG APT_URI="https://nexus.rnd.aip.ooo/repository/apt-docker-debian"
 ARG APT_SECURITY_URI="https://nexus.rnd.aip.ooo/repository/debian-security"
+
+# В базовом образе у основного источника прописано "trixie trixie-updates", но
+# зеркала часто проксируют только сам trixie, и тогда apt-get update падает:
+# "trixie-updates Release does not have a Release file". Отсюда список suites
+# отдельным аргументом — лишний можно убрать, не трогая остальное.
+# На пакеты это не влияет: trixie-updates добирает точечные обновления между
+# минорными выпусками, база целиком лежит в trixie
+ARG APT_SUITES="trixie"
 ARG PIP_INDEX_URL=""
 ARG PIP_TRUSTED_HOST=""
 
@@ -25,6 +33,7 @@ ARG PIP_TRUSTED_HOST=""
 RUN sed -i \
         -e "s|http://deb.debian.org/debian-security|$APT_SECURITY_URI|g" \
         -e "s|http://deb.debian.org/debian|$APT_URI|g" \
+        -e "s|^Suites: trixie trixie-updates$|Suites: $APT_SUITES|" \
         /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
