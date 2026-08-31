@@ -14,7 +14,7 @@ import sys
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
-from kb import code_retriever, config, dojo, jira_retriever
+from kb import code_retriever, config, dojo, dojo_retriever, jira_retriever
 from kb.embedder import EmbedError
 from kb.jira_retriever import JiraSearchError
 from kb.retriever import SearchError, known_values, search
@@ -393,7 +393,9 @@ def dojo_findings(
     product: str,
     status: str = "open",
     severity: str | None = None,
+    query: str | None = None,
     limit: int = 10,
+    response_format: str = "concise",
 ) -> dict:
     """УЯЗВИМОСТИ ПРОДУКТА из DefectDojo: что нашли сканеры и что не закрыто.
 
@@ -402,47 +404,72 @@ def dojo_findings(
     требования и регламенты безопасности отвечает kb_search, а тут лежат
     находки сканеров по конкретным продуктам.
 
-    Данные берутся из DefectDojo В МОМЕНТ ВОПРОСА, а не из индекса, — они
-    всегда актуальны. Оговорок про дату здесь не нужно.
-
-    Отвечает на «что у нас по продукту X», «сколько критичных открыто»,
-    «что приняли как риск». Всегда возвращает сводку по уровням, даже когда
-    спросили про один: видеть картину целиком полезнее, чем один срез.
+    Продукт, состояние и уровень — ЭТО ФИЛЬТРЫ, отдельные аргументы. В query
+    кладут только тему («инъекции», «устаревшие зависимости»), и только если
+    она в вопросе есть. «Критичные по abinf» темы не содержит — query не нужен.
 
     Примеры:
-      «@dojo что по продукту abinf»        -> product="abinf"
-      «@dojo критичные по abinf»           -> product="abinf", severity="критичные"
-      «@dojo что приняли как риск в abinf» -> product="abinf", status="accepted"
+      «dojo что по продукту abinf»        -> product="abinf"
+      «dojo критичные по abinf»           -> product="abinf", severity="критичные"
+      «dojo что приняли как риск в abinf» -> product="abinf", status="принятые"
+      «dojo что по инъекциям в abinf»     -> product="abinf", query="инъекции"
+
+    Сводка по уровням возвращается ВСЕГДА, даже если спросили про один: «три
+    критичных» без общей картины вводит в заблуждение — непонятно, три из трёх
+    это или три из сорока. Начинай ответ со сводки, потом сами находки.
+
+    ДАННЫЕ — СНИМОК ИНДЕКСА, а не живой DefectDojo. Находки меняются каждый
+    день, поэтому если речь о количестве открытых, добавляй, что это по данным
+    последней выгрузки, и предлагай проверить в самом DefectDojo.
 
     Args:
         product: название продукта, можно неполно: "abinf"
-        status: "open" (по умолчанию, активные незакрытые), "accepted"
-            (принятый риск), "false_positive", "fixed", "all"
+        status: "open" (по умолчанию), "принятые"/"accepted", "ложные",
+            "закрытые"/"fixed" или "all" — все состояния
         severity: уровень — критичный, высокий, средний, низкий,
-            информационный. Без него вернутся находки всех уровней
+            информационный. Без него вернутся все
+        query: тема, если она есть в вопросе. Ищет по описаниям находок и
+            рекомендациям по устранению
         limit: сколько находок показать, по умолчанию 10
+        response_format: "concise" (по умолчанию) или "detailed" — со сканером,
+            CWE, датой и текстом находки
 
     Returns:
-        product, summary (счётчики по уровням) и findings — список находок со
-        ссылками. В ответе ОБЯЗАТЕЛЬНО приводи ссылки: без них человеку некуда
-        идти разбираться. Начинай с самого серьёзного уровня.
+        product, summary (счётчики по уровням), applied_filters и findings —
+        список находок со ссылками. В ответе ОБЯЗАТЕЛЬНО приводи ссылки: без
+        них человеку некуда идти разбираться.
     """
-    if not dojo.configured():
-        return {
-            "error": (
-                "DefectDojo не подключён: нужны DOJO_URL и DOJO_TOKEN в .env. "
-                "Проверка связи — python -m kb.dojo --check"
-            )
-        }
-
     try:
-        return dojo.report(
-            product=product, status=status, severity=severity, limit=limit
+        result = dojo_retriever.search(
+            product=product,
+            status=status,
+            severity=severity,
+            query=query,
+            limit=limit,
         )
+    except dojo_retriever.DojoSearchError as e:
+        return {"error": str(e)}
     except dojo.DojoError as e:
         return {"error": str(e)}
+    except EmbedError as e:
+        return {"error": str(e)}
     except Exception as e:
-        return {"error": f"Запрос в DefectDojo не удался: {e}"}
+        return {"error": f"Поиск по находкам не удался: {e}"}
+
+    detailed = response_format == "detailed"
+    hits = result["hits"]
+    return {
+        "product": result["product"],
+        "summary": result["summary"],
+        "applied_filters": result["applied_filters"],
+        "found": len(hits),
+        "findings": [h.as_dict(detailed=detailed) for h in hits],
+        "citation_instruction": (
+            "Начни со сводки по уровням, потом перечисли находки со ссылками. "
+            "Данные из индекса, а не из живого DefectDojo: если речь о "
+            "количестве открытых, оговори это и предложи свериться."
+        ),
+    }
 
 
 def main() -> None:

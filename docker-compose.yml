@@ -85,8 +85,8 @@ services:
       - JIRA_JQL=${JIRA_JQL:-}
       - JIRA_COMMENTS=${JIRA_COMMENTS:-1}
       - JIRA_OUT=/docs/jira
-      # DefectDojo: живой запрос в момент вопроса, индекса нет.
-      # Проверка связи: docker compose exec kb python -m kb.dojo --check
+      # DefectDojo: проверка связи — python -m kb.dojo --check,
+      # выгрузка и индексация — python -m kb.dojo_index
       - DOJO_URL=${DOJO_URL:-}
       - DOJO_TOKEN=${DOJO_TOKEN:-}
       - DOJO_PRODUCTS=${DOJO_PRODUCTS:-}

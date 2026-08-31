@@ -1,11 +1,14 @@
-"""Находки DefectDojo: живой запрос к API, без индексации.
+"""Клиент DefectDojo: продукты и находки.
 
-Почему не как Confluence и Jira. Находки меняются каждый день: приходит новый
-скан, меняется статус, риск принимают или закрывают. Ответ «критичных нет» по
-вчерашнему снимку хуже, чем отсутствие ответа: на него полагаются, а он врёт.
-Плюс вопросы к DefectDojo по форме счётные — «сколько открытых высоких по
-продукту», — а не смысловые, и вектор для них бесполезен. Поэтому здесь
-обычный HTTP-запрос в момент вопроса.
+Находки выгружаются в Qdrant (`kb/dojo_index.py`) и ищутся там же, как
+документация, код и задачи, — механика у всех источников одна. Здесь только
+HTTP-клиент, которым пользуется индексатор, и проверка связи.
+
+У индекса всегда есть возраст, и для уязвимостей это важнее, чем для
+документации: находки меняются каждый день — новый скан, смена статуса,
+принятый риск. Поэтому ответ верен на момент последней выгрузки, и инструмент
+это проговаривает, как и с задачами Jira. Живой запрос в момент вопроса —
+следующий шаг, клиент для него здесь уже есть.
 
 Только чтение. Менять статусы находок из чата нельзя: галлюцинация, попавшая
 в тикет, — это неприятно, а галлюцинация, закрывшая уязвимость, — инцидент.
@@ -27,7 +30,6 @@ DOJO_PRODUCTS — граница доступа, а не удобство. По�
 import logging
 import os
 import sys
-from dataclasses import dataclass
 
 import httpx
 
@@ -38,6 +40,7 @@ TOKEN = os.getenv("DOJO_TOKEN", "").strip()
 PRODUCTS = [p.strip() for p in os.getenv("DOJO_PRODUCTS", "").split(",") if p.strip()]
 VERIFY_TLS = os.getenv("DOJO_VERIFY_TLS", "1").strip() != "0"
 TIMEOUT = 30.0
+PAGE_SIZE = 100
 
 # Порядок важен: в таком виде выдаём сводку и в таком же считаем «сначала
 # худшее». Значения — как их пишет сам DefectDojo
@@ -69,32 +72,6 @@ STATUS_FILTERS = {
 
 class DojoError(RuntimeError):
     """Ошибка с объяснением, которое можно показать модели как есть."""
-
-
-@dataclass
-class Finding:
-    id: int
-    title: str
-    severity: str
-    component: str
-    scanner: str
-    found_at: str
-    url: str
-
-    def as_dict(self) -> dict:
-        out = {
-            "id": self.id,
-            "title": self.title,
-            "severity": self.severity,
-            "url": self.url,
-        }
-        if self.component:
-            out["component"] = self.component
-        if self.scanner:
-            out["scanner"] = self.scanner
-        if self.found_at:
-            out["found"] = self.found_at[:10]
-        return out
 
 
 def configured() -> bool:
@@ -225,79 +202,64 @@ def summary(client: httpx.Client, product_id: int, status: str) -> dict:
     return {sev: _count(client, product_id, status, sev) for sev in SEVERITIES}
 
 
-def findings(
-    client: httpx.Client,
-    product_id: int,
-    status: str,
-    severity: str | None,
-    limit: int,
-) -> list[Finding]:
-    """Сами находки, сначала самые серьёзные и свежие."""
-    params = dict(STATUS_FILTERS[status])
-    params.update(
-        {
-            "test__engagement__product": product_id,
-            "limit": limit,
-            # Сортировка DefectDojo: минус — по убыванию. Сначала уровень,
-            # потом дата, чтобы наверх попадало худшее и недавнее
-            "ordering": "-numerical_severity,-date",
-        }
-    )
-    if severity:
-        params["severity"] = severity
+def scanner_name(item: dict) -> str:
+    """Чем нашли. Ключ зависит от версии DefectDojo, поэтому перебираем.
 
-    data = _get(client, "/findings/", **params)
-    out = []
-    for item in data.get("results", []):
-        out.append(
-            Finding(
-                id=item.get("id", 0),
-                title=(item.get("title") or "").strip(),
-                severity=item.get("severity", ""),
-                component=" ".join(
-                    filter(
-                        None,
-                        [item.get("component_name") or "", item.get("component_version") or ""],
-                    )
-                ).strip(),
-                scanner=(item.get("found_by_name") or ""),
-                found_at=item.get("date") or "",
-                url=f"{URL}/finding/{item.get('id')}",
-            )
+    В разных сборках это found_by_name, список found_by или имя типа теста —
+    гадать бесполезно, дешевле проверить по очереди и не упасть, если нет
+    ничего: сканер в находке приятная деталь, а не обязательное поле.
+    """
+    for key in ("found_by_name", "test_type_name", "scanner"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, list) and value:
+            return ", ".join(str(v) for v in value)
+    return ""
+
+
+def finding_status(item: dict) -> str:
+    """Одно слово вместо четырёх флагов DefectDojo.
+
+    Порядок проверок важен: находка может быть одновременно неактивной и
+    закрытой, и принятый риск важнее, чем «неактивна», — он объясняет почему.
+    """
+    if item.get("false_p"):
+        return "false_positive"
+    if item.get("risk_accepted"):
+        return "accepted"
+    if item.get("is_mitigated") or item.get("mitigated"):
+        return "fixed"
+    if item.get("active"):
+        return "open"
+    return "inactive"
+
+
+def all_findings(client: httpx.Client, product_id: int):
+    """Все находки продукта, постранично. Для индексатора.
+
+    Дубликаты пропускаем: DefectDojo помечает их сам, и в индексе они дали бы
+    по нескольку одинаковых ответов на один вопрос.
+    """
+    offset = 0
+    while True:
+        data = _get(
+            client,
+            "/findings/",
+            **{
+                "test__engagement__product": product_id,
+                "duplicate": "false",
+                "limit": PAGE_SIZE,
+                "offset": offset,
+                "ordering": "id",
+            },
         )
-    return out
-
-
-def report(
-    product: str,
-    status: str = "open",
-    severity: str | None = None,
-    limit: int = 10,
-) -> dict:
-    """Готовый ответ по продукту: сводка плюс сами находки."""
-    if not configured():
-        raise DojoError(
-            "DefectDojo не настроен: нужны DOJO_URL и DOJO_TOKEN в .env, "
-            "после правки — docker compose up -d kb"
-        )
-    if status not in STATUS_FILTERS:
-        raise DojoError(
-            "status бывает: open (по умолчанию), accepted, false_positive, "
-            "fixed, all."
-        )
-
-    canonical = normalize_severity(severity) if severity else None
-
-    with _client() as client:
-        found = resolve_product(client, product)
-        pid = found["id"]
-        return {
-            "product": found.get("name", ""),
-            "product_url": f"{URL}/product/{pid}",
-            "status": status,
-            "summary": summary(client, pid, status),
-            "findings": [f.as_dict() for f in findings(client, pid, status, canonical, limit)],
-        }
+        results = data.get("results", [])
+        for item in results:
+            yield item
+        offset += len(results)
+        if not results or offset >= int(data.get("count", 0)):
+            return
 
 
 def main() -> int:
