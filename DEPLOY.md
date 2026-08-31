@@ -108,6 +108,27 @@ docker compose exec kb python -m kb.doc_index /docs/internal --source local
 **Confluence** — отдельно, см. `confluence/README.md`. Скрипт выгружает
 страницы в markdown, дальше их индексирует та же команда.
 
+**Jira** (только Server/Data Center) — свой индексатор, не `doc_index`: у задач
+важны поля (исполнитель, статус), и они едут в отдельные фильтры.
+
+```bash
+docker compose exec kb python jira/sync.py --check    # связь и сколько задач
+docker compose exec kb python jira/sync.py            # выгрузка в /docs/jira
+docker compose exec kb python -m kb.jira_index /docs/jira
+```
+
+В `.env` обязательны `JIRA_URL`, `JIRA_TOKEN` и `JIRA_PROJECTS`. Охват сужается
+до своей команды через `JIRA_TEAM` (логины через запятую) или `JIRA_TEAM_GROUP`
+(группа Jira). `--check` печатает две цифры на проект — всего задач и сколько
+поедет: если они совпали, условие команды не сработало.
+
+По расписанию, `crontab -e` (выгрузка инкрементальная, забирает только
+изменившееся):
+
+```
+30 * * * * cd /srv/local-ai && docker compose exec -T kb python jira/sync.py && docker compose exec -T kb python -m kb.jira_index /docs/jira >> /var/log/local-ai-sync.log 2>&1
+```
+
 ## Если поиск работает медленно
 
 Настройки Ollama здесь не задаются — она чужая. Но одна её особенность

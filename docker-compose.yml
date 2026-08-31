@@ -72,6 +72,18 @@ services:
       - CONFLUENCE_TOKEN=${CONFLUENCE_TOKEN:-}
       - CONFLUENCE_PAGES=${CONFLUENCE_PAGES:-}
       - CONFLUENCE_OUT=/docs/confluence
+      # Выгрузка задач Jira — там же:
+      #   docker compose exec kb python jira/sync.py --check
+      - JIRA_URL=${JIRA_URL:-}
+      - JIRA_TOKEN=${JIRA_TOKEN:-}
+      - JIRA_USER=${JIRA_USER:-}
+      - JIRA_PASSWORD=${JIRA_PASSWORD:-}
+      - JIRA_PROJECTS=${JIRA_PROJECTS:-}
+      - JIRA_TEAM=${JIRA_TEAM:-}
+      - JIRA_TEAM_GROUP=${JIRA_TEAM_GROUP:-}
+      - JIRA_JQL=${JIRA_JQL:-}
+      - JIRA_COMMENTS=${JIRA_COMMENTS:-1}
+      - JIRA_OUT=/docs/jira
     # host.docker.internal (модель на этой же машине) сам по себе есть только
     # в Docker Desktop. На Linux с обычным Docker Engine имя не резолвится, и
     # kb молча теряет доступ к модели — при том что deploy.sh и healthcheck.sh

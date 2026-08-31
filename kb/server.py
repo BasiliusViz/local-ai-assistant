@@ -14,8 +14,9 @@ import sys
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
-from kb import code_retriever, config
+from kb import code_retriever, config, jira_retriever
 from kb.embedder import EmbedError
+from kb.jira_retriever import JiraSearchError
 from kb.retriever import SearchError, known_values, search
 
 logging.basicConfig(
@@ -31,8 +32,10 @@ PORT = int(os.getenv("KB_PORT", "8010"))
 mcp = MCPServer(
     "knowledge-base",
     instructions=(
-        "Поиск по внутренней документации компании на русском языке. "
-        "Используй для вопросов о внутренних сервисах, регламентах и процессах."
+        "Поиск по внутренним данным компании на русском языке: документация "
+        "(kb_search), исходный код (code_search) и задачи Jira (jira_search). "
+        "Инструменты вызываются только по явной просьбе, у каждого своё "
+        "условие — оно описано в самом инструменте."
     ),
 )
 
@@ -254,9 +257,111 @@ def code_search(
     }
 
 
+@mcp.tool(
+    annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+)
+def jira_search(
+    query: str | None = None,
+    person: str | None = None,
+    role: str = "assignee",
+    project: str | None = None,
+    status: str | None = None,
+    top_k: int = 10,
+    response_format: str = "concise",
+) -> dict:
+    """ЗАДАЧИ JIRA: кто над чем работает и что в каком статусе.
+
+    ВЫЗЫВАЙ ТОЛЬКО ЕСЛИ В СООБЩЕНИИ ЕСТЬ СЛОВО «jira» («@jira», «жира»,
+    «джира»). Это единственное условие, и оно жёсткое. Вопрос «чем занят
+    Иванов» без этого слова — не повод вызывать инструмент: ответь, что можешь
+    посмотреть в Jira, если попросят. «@jira чем занят Иванов» — вызывай.
+
+    В индексе лежат задачи ОДНОЙ КОМАНДЫ из нескольких проектов: заголовки,
+    описания и комментарии. Чужих проектов там нет — если задача не нашлась,
+    возможно, она просто вне охвата, а не отсутствует в Jira.
+
+    Как задавать вопрос. Человек, проект и статус — это ФИЛЬТРЫ, их надо
+    класть в отдельные аргументы, а не в query:
+      «@jira что на Иванове»            -> person="Иванов"
+      «@jira что открыто в DEVSEC»      -> project="DEVSEC", status="открытые"
+      «@jira задачи Петрова про импорт» -> person="Петров", query="импорт"
+      «@jira где обсуждали дедупликацию» -> query="дедупликация"
+    Если положить фамилию в query, поиск будет искать её в ТЕКСТЕ задач, а там
+    её нет: исполнитель хранится отдельным полем. Это главная ошибка.
+
+    query нужен, только когда в вопросе есть смысловая часть — про что задача.
+    Для «какие задачи на человеке» query не нужен вовсе: вернутся последние
+    изменённые, а это и требуется.
+
+    ДАННЫЕ — СНИМОК, а не живая Jira: статусы верны на дату из поля updated.
+    Всегда показывай номер задачи и эту дату, чтобы человек мог проверить.
+
+    Args:
+        query: о чём задача, обычными словами. Без фамилий и статусов
+        person: фамилия или логин человека. Можно неполно: «Иванов»
+        role: "assignee" (исполнитель, по умолчанию) или "reporter" (автор)
+        project: ключ проекта, например "DEVSEC"
+        status: название статуса как в Jira, либо «открытые» / «закрытые»
+        top_k: сколько задач вернуть, по умолчанию 10
+        response_format: "concise" (по умолчанию) — номер, заголовок, статус,
+            исполнитель, ссылка. "detailed" — плюс тип, приоритет, автор и
+            фрагмент текста, по которому задача нашлась
+
+    Returns:
+        found и results: список задач. В ответе ОБЯЗАТЕЛЬНО указывай номер
+        задачи и ссылку — без них человеку не с чем идти в Jira.
+    """
+    if not jira_retriever.available():
+        return {
+            "error": (
+                "Задачи Jira не проиндексированы. Выгрузка: python jira/sync.py, "
+                "затем docker compose exec kb python -m kb.jira_index /docs/jira"
+            )
+        }
+
+    try:
+        issues = jira_retriever.search_issues(
+            query=query,
+            person=person,
+            role=role,
+            project=project,
+            status=status,
+            top_k=top_k,
+        )
+    except JiraSearchError as e:
+        # Не ошибка выполнения, а разъяснение: модель может исправить запрос
+        # и позвать снова. Поэтому текст пишем ей, а не в лог
+        return {"error": str(e)}
+    except EmbedError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Поиск по задачам не удался: {e}"}
+
+    if not issues:
+        hint = "Под эти условия задач нет."
+        if query and (person or project or status):
+            hint += (
+                " Возможно, дело в query: попробуй без него — фильтров может "
+                "быть достаточно."
+            )
+        return {"found": 0, "results": [], "hint": hint}
+
+    detailed = response_format == "detailed"
+    return {
+        "found": len(issues),
+        "results": [i.as_dict(detailed=detailed) for i in issues],
+        "citation_instruction": (
+            "Для каждой задачи указывай её номер и ссылку. Данные — снимок "
+            "индекса: если статус важен, добавь «по данным на <updated>»."
+        ),
+    }
+
+
 def main() -> None:
     sources = known_values("source") or ["(база пуста)"]
     log.info("База знаний: коллекция %s, источники: %s", config.COLLECTION, sources)
+    if jira_retriever.available():
+        log.info("Задачи Jira: проекты %s", jira_retriever.values("project"))
     log.info("MCP streamable-http на http://%s:%s/mcp", HOST, PORT)
     # stateless_http: без него сервер выдаёт session-id и требует его в каждом
     # запросе, а Continue его не сохраняет — отсюда "Session not found" после

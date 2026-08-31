@@ -1,6 +1,7 @@
 # Окружение и секреты
 .env
 confluence/.env
+jira/.env
 *.key
 *.pem
 
@@ -15,6 +16,8 @@ corpus/progit2-ru/
 corpus/md/
 confluence/pages/
 confluence/.sync_state.json
+# Выгрузка Jira: там имена людей и содержимое задач, в репозитории им не место
+jira/issues/
 graphify-out/
 
 # Служебное

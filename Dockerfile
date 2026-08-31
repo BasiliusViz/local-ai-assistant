@@ -22,9 +22,10 @@ RUN pip install --no-cache-dir \
     -r requirements.txt
 
 COPY kb/ ./kb/
-# Выгрузка Confluence живёт здесь же: на сервере не нужен Python, всё
+# Выгрузка Confluence и Jira живёт здесь же: на сервере не нужен Python, всё
 # запускается через docker compose exec kb
 COPY confluence/ ./confluence/
+COPY jira/ ./jira/
 
 # Внутри контейнера localhost - это сам контейнер, а не хост.
 # Соседние сервисы доступны по именам из compose.

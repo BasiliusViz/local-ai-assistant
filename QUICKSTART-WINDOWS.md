@@ -79,6 +79,52 @@ python confluence\sync.py             # выгрузка
 
 Подробности и разбор ошибок — `confluence/README.md`.
 
+### Задачи из Jira
+
+Только **Jira Server/Data Center**. У Cloud другая схема входа и другой путь
+API — скрипт её не умеет.
+
+Настройки — в том же `.env`:
+
+```
+JIRA_URL=https://jira.company.local
+JIRA_TOKEN=ваш-PAT-токен
+JIRA_PROJECTS=DEVSEC,PLAT
+JIRA_TEAM=i.ivanov,p.petrov
+JIRA_OUT=D:\local-ai\docs\jira
+```
+
+`JIRA_PROJECTS` и `JIRA_TEAM` — это границы выгрузки: чего в них нет, то не
+попадёт и в базу. В `JIRA_TEAM` нужны **логины**, а не отображаемые имена;
+вместо списка можно указать группу Jira в `JIRA_TEAM_GROUP`. Обе переменные
+фильтруют по исполнителю, поэтому задачи без исполнителя не приедут.
+
+`JIRA_OUT` должен быть **внутри** `DOCS_DIR` — иначе контейнер не увидит
+выгруженное при индексации.
+
+```powershell
+python jira\sync.py --check     # связь и сколько задач поедет
+python jira\sync.py --dry-run   # что будет выгружено, без записи
+python jira\sync.py             # выгрузка
+```
+
+`--check` печатает по каждому проекту две цифры: сколько задач всего и сколько
+попадёт в выгрузку. Если они совпали, условие команды не сработало — почти
+всегда в `JIRA_TEAM` вписаны фамилии вместо логинов.
+
+Индексируются задачи **своим** индексатором, а не `doc_index`: у них важны поля
+(исполнитель, статус), и они становятся фильтрами.
+
+```powershell
+docker compose exec kb python -m kb.jira_index /docs/jira
+```
+
+Повторный запуск забирает только изменившееся — состояние рядом с выгрузкой,
+в `.sync_state.json`.
+
+В чате инструмент вызывается по слову **jira**: «@jira что на Иванове»,
+«@jira что открыто в DEVSEC». Без этого слова модель в Jira не полезет.
+
 ## 3. Код (если нужен поиск по нему)
 
 Два варианта:
@@ -137,6 +183,15 @@ schtasks /create /tn "local-ai code" /tr "powershell -File C:\local-ai\update-co
 ```powershell
 python confluence\sync.py
 docker compose exec kb python -m kb.doc_index /docs/confluence --source confluence
+```
+
+Задачи Jira — так же, двумя командами, но своим индексатором. Их имеет смысл
+обновлять чаще документации: статусы меняются каждый день, а устаревший статус
+хуже отсутствующего.
+
+```powershell
+python jira\sync.py
+docker compose exec kb python -m kb.jira_index /docs/jira
 ```
 
 Индексация обновляет только изменившиеся файлы: идентификатор чанка выводится
