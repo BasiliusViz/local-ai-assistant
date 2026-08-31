@@ -238,9 +238,17 @@ def search(
     if source:
         available = known_values("source")
         if available and source not in available:
+            # В подсказке не перечисляем источники со своим инструментом:
+            # предложить модели source_filter="jira" — значит подтолкнуть её
+            # искать задачи не тем инструментом, от чего мы и уходили
+            offered = [s for s in available if s not in OWN_TOOL_SOURCES]
             raise SearchError(
                 f"Источника '{source}' в базе нет. "
-                f"Доступные: {', '.join(available)}."
+                + (
+                    f"Доступные: {', '.join(offered)}."
+                    if offered
+                    else "Документы ещё не проиндексированы."
+                )
             )
     if space:
         available = known_values("space")
