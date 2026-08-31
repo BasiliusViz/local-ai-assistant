@@ -22,6 +22,7 @@
 """
 
 import logging
+import re
 from dataclasses import dataclass
 
 from qdrant_client import models
@@ -46,6 +47,20 @@ class JiraSearchError(RuntimeError):
 
 
 @dataclass
+class JiraResult:
+    """Найденное вместе с тем, ЧТО именно было применено.
+
+    Разбор типовых отказов RAG сходится в одном: больше всего промахов
+    случается не в поиске, а до него — фильтр молча выбрасывает нужное, и
+    отличить «в базе нет» от «спросили не то» уже невозможно. Поэтому
+    применённые условия возвращаются наружу вместе с результатом.
+    """
+
+    issues: list["Issue"]
+    applied: dict
+
+
+@dataclass
 class Issue:
     key: str
     summary: str
@@ -59,6 +74,10 @@ class Issue:
     snippet: str = ""
     found_in: str = ""
     score: float = 0.0
+    chunk_idx: int = 0
+    # Показать текст даже без смыслового поиска. Нужно при запросе конкретной
+    # задачи по номеру: там текст и есть ответ, а не список из одной строки
+    show_text: bool = False
 
     def as_dict(self, detailed: bool = False) -> dict:
         out = {
@@ -80,7 +99,7 @@ class Issue:
                     "score": round(self.score, 4),
                 }
             )
-        elif self.score > 0 and self.snippet:
+        elif (self.score > 0 or self.show_text) and self.snippet:
             # Цитату кладём, только когда задача НАЙДЕНА по смыслу: там она и
             # есть ответ. В простой выборке («что на Иванове») это была бы
             # карточка задачи, уже разобранная по полям выше — десять таких
@@ -254,8 +273,14 @@ def _dedupe(points, limit: int) -> list[Issue]:
         if not key:
             continue
         score = float(getattr(point, "score", 0.0) or 0.0)
-        if key in seen and seen[key].score >= score:
-            continue
+        idx = pl.get("chunk_idx", 0)
+        if key in seen:
+            best = seen[key]
+            # При равных оценках (а в выборке они все нулевые) держим первый
+            # чанк задачи: это карточка с описанием, а не случайный
+            # комментарий из середины обсуждения
+            if best.score > score or (best.score == score and best.chunk_idx <= idx):
+                continue
         seen[key] = Issue(
             key=key,
             summary=pl.get("title", "").split(": ", 1)[-1],
@@ -271,8 +296,53 @@ def _dedupe(points, limit: int) -> list[Issue]:
             if pl.get("chunk_kind") == "comment"
             else "описание",
             score=score,
+            chunk_idx=idx,
         )
     return list(seen.values())[:limit]
+
+
+ISSUE_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
+
+
+def get_issue(key: str) -> JiraResult:
+    """Одна задача по номеру.
+
+    Отдельный путь, а не частный случай поиска: «что там с DEVSEC-412» — это
+    точное обращение, и векторный поиск по такому запросу работает отвратительно
+    (номер задачи почти не несёт смысла для эмбеддера). Здесь же нужен ровно
+    один документ, и он достаётся фильтром по индексированному полю.
+    """
+    wanted = key.strip().upper()
+    applied = {"issue_key": wanted}
+
+    points, _ = client().scroll(
+        collection_name=config.COLLECTION,
+        scroll_filter=models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="source", match=models.MatchValue(value=SOURCE)
+                ),
+                models.FieldCondition(
+                    key="issue_key", match=models.MatchValue(value=wanted)
+                ),
+            ]
+        ),
+        limit=200,
+        with_payload=True,
+    )
+
+    if not points:
+        raise JiraSearchError(
+            f"Задачи {wanted} в индексе нет. Возможные причины: она вне "
+            "выгружаемых проектов, вне окна по времени (JIRA_SINCE) или "
+            "принадлежит не тому, по кому идёт отбор команды. "
+            "Проверить можно только в самой Jira."
+        )
+
+    issues = _dedupe(points, 1)
+    for issue in issues:
+        issue.show_text = True
+    return JiraResult(issues=issues, applied=applied)
 
 
 def search_issues(
@@ -281,12 +351,24 @@ def search_issues(
     role: str = "assignee",
     project: str | None = None,
     status: str | None = None,
+    issue_key: str | None = None,
     top_k: int = 10,
-) -> list[Issue]:
+) -> JiraResult:
     """Задачи под условия. Хотя бы одно условие должно быть задано."""
     if role not in ("assignee", "reporter"):
         raise JiraSearchError("role бывает только assignee или reporter.")
 
+    # Номер задачи перебивает всё остальное: спрашивают конкретную задачу,
+    # а не «задачи Иванова, среди которых есть эта»
+    if issue_key:
+        return get_issue(issue_key)
+
+    # Номер, положенный в query по ошибке, ловим тут же: модель нередко суёт
+    # «DEVSEC-412» в поисковый запрос, и векторный поиск его не находит
+    if query and ISSUE_KEY.match(query.strip()):
+        return get_issue(query)
+
+    applied: dict = {}
     must: list[models.FieldCondition] = [
         models.FieldCondition(key="source", match=models.MatchValue(value=SOURCE))
     ]
@@ -296,6 +378,7 @@ def search_issues(
             must.append(
                 models.FieldCondition(key="assignee", match=models.MatchValue(value=""))
             )
+            applied["assignee"] = "не назначен"
         else:
             matched = resolve_person(person, role)
             if not matched:
@@ -318,6 +401,9 @@ def search_issues(
                     key=role, match=models.MatchValue(value=matched[0])
                 )
             )
+            # Возвращаем РАЗРЕШЁННОЕ имя, а не то, что спросили: «Иванов» и
+            # «Иванов Иван Петрович» — разные вещи, и подмену надо видеть
+            applied[role] = matched[0]
 
     if project:
         known = values("project")
@@ -329,9 +415,17 @@ def search_issues(
         must.append(
             models.FieldCondition(key="project", match=models.MatchValue(value=wanted))
         )
+        applied["project"] = wanted
 
     if status:
-        must.extend(_status_conditions(status))
+        conditions = _status_conditions(status)
+        must.extend(conditions)
+        # Показываем, во что превратился статус: «открытые» могли стать
+        # категорией, а могли — списком конкретных колонок проекта
+        applied["status"] = "; ".join(
+            f"{c.key}={getattr(c.match, 'value', None) or getattr(c.match, 'any', '')}"
+            for c in conditions
+        )
 
     filtered = len(must) > 1  # что-то кроме обязательного source=jira
     if not filtered and not query:
@@ -363,8 +457,10 @@ def search_issues(
                 limit=max(top_k * 6, 60),
                 with_payload=True,
             )
-        return _dedupe(points, top_k)
+        applied["sort"] = "по дате изменения, свежие сверху"
+        return JiraResult(issues=_dedupe(points, top_k), applied=applied)
 
+    applied["query"] = query
     vector = embed_batch([query])[0]
     found = client().query_points(
         collection_name=config.COLLECTION,
@@ -381,5 +477,6 @@ def search_issues(
     # не из чего, и общий порог выбросил бы верные ответы
     if not filtered:
         points = [p for p in points if p.score >= config.MIN_SCORE]
+        applied["threshold"] = config.MIN_SCORE
 
-    return _dedupe(points, top_k)
+    return JiraResult(issues=_dedupe(points, top_k), applied=applied)

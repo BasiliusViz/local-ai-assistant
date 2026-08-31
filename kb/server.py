@@ -81,6 +81,11 @@ def kb_search(
     инструменту code_search, он ищет по самому коду. Здесь лежат только
     тексты документации, кода в них нет.
 
+    НЕ ВЫЗЫВАЙ, ЕСЛИ В СООБЩЕНИИ ЕСТЬ СЛОВО «jira». Задачи, тикеты, номера
+    вида ABC-123, вопросы «что на ком», «в каком статусе» — это jira_search.
+    Задач здесь нет вовсе: этот инструмент их не видит, и на вопрос про Jira
+    вернёт похожий по словам текст из документации — то есть неверный ответ.
+
     Формулируй query как обычный вопрос на естественном языке, а не набор
     ключевых слов: поиск семантический, ему нужен смысл, а не термины.
 
@@ -266,6 +271,7 @@ def jira_search(
     role: str = "assignee",
     project: str | None = None,
     status: str | None = None,
+    issue_key: str | None = None,
     top_k: int = 10,
     response_format: str = "concise",
 ) -> dict:
@@ -286,6 +292,7 @@ def jira_search(
       «@jira что открыто в DEVSEC»      -> project="DEVSEC", status="открытые"
       «@jira задачи Петрова про импорт» -> person="Петров", query="импорт"
       «@jira где обсуждали дедупликацию» -> query="дедупликация"
+      «@jira что там с DEVSEC-412»      -> issue_key="DEVSEC-412"
     Если положить фамилию в query, поиск будет искать её в ТЕКСТЕ задач, а там
     её нет: исполнитель хранится отдельным полем. Это главная ошибка.
 
@@ -302,6 +309,9 @@ def jira_search(
         role: "assignee" (исполнитель, по умолчанию) или "reporter" (автор)
         project: ключ проекта, например "DEVSEC"
         status: название статуса как в Jira, либо «открытые» / «закрытые»
+        issue_key: номер конкретной задачи, например "DEVSEC-412". Когда он
+            задан, остальные условия не нужны. Номер НИКОГДА не кладут в query:
+            там он ищется по смыслу и не находится
         top_k: сколько задач вернуть, по умолчанию 10
         response_format: "concise" (по умолчанию) — номер, заголовок, статус,
             исполнитель, ссылка. "detailed" — плюс тип, приоритет, автор и
@@ -320,14 +330,16 @@ def jira_search(
         }
 
     try:
-        issues = jira_retriever.search_issues(
+        result = jira_retriever.search_issues(
             query=query,
             person=person,
             role=role,
             project=project,
             status=status,
+            issue_key=issue_key,
             top_k=top_k,
         )
+        issues, applied = result.issues, result.applied
     except JiraSearchError as e:
         # Не ошибка выполнения, а разъяснение: модель может исправить запрос
         # и позвать снова. Поэтому текст пишем ей, а не в лог
@@ -344,15 +356,22 @@ def jira_search(
                 " Возможно, дело в query: попробуй без него — фильтров может "
                 "быть достаточно."
             )
-        return {"found": 0, "results": [], "hint": hint}
+        return {"found": 0, "results": [], "applied_filters": applied, "hint": hint}
 
     detailed = response_format == "detailed"
     return {
         "found": len(issues),
         "results": [i.as_dict(detailed=detailed) for i in issues],
+        # Что реально применилось. Молчаливый фильтр — самая частая причина
+        # «нашлось не то»: под «Иванов» мог подставиться другой Иванов, а
+        # «открытые» превратиться в набор колонок конкретного проекта
+        "applied_filters": applied,
         "citation_instruction": (
             "Для каждой задачи указывай её номер и ссылку. Данные — снимок "
-            "индекса: если статус важен, добавь «по данным на <updated>»."
+            "индекса: если статус важен, добавь «по данным на <updated>». "
+            "Если в applied_filters подставилось не то, что просил человек "
+            "(например другой однофамилец) — скажи об этом, а не делай вид, "
+            "что нашёл именно запрошенное."
         ),
     }
 

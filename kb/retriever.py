@@ -90,17 +90,34 @@ def known_values(field_name: str) -> list[str]:
         return []
 
 
+# Источники, которые kb_search не показывает, пока их не попросили явно.
+# У задач Jira есть свой инструмент (jira_search) с фильтрами по исполнителю и
+# статусу, а лежат они в общей коллекции — без этого исключения поиск по
+# документации возвращал бы вперемешку регламенты и тикеты, и на вопрос про
+# Jira модель получала бы ответ из Confluence.
+OWN_TOOL_SOURCES = ("jira",)
+
+
 def _build_filter(source: str | None, space: str | None) -> models.Filter | None:
     must = []
+    must_not = []
     if source:
         must.append(
             models.FieldCondition(key="source", match=models.MatchValue(value=source))
+        )
+    else:
+        must_not.append(
+            models.FieldCondition(
+                key="source", match=models.MatchAny(any=list(OWN_TOOL_SOURCES))
+            )
         )
     if space:
         must.append(
             models.FieldCondition(key="space", match=models.MatchValue(value=space))
         )
-    return models.Filter(must=must) if must else None
+    if not must and not must_not:
+        return None
+    return models.Filter(must=must, must_not=must_not)
 
 
 def _search_many(queries: list[str], limit: int, flt) -> list:
