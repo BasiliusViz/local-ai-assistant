@@ -1,9 +1,11 @@
 """Выгрузка задач Jira Server/DC в файлы для последующей индексации.
 
-Охват задаётся двумя рамками, и обе сужают выборку:
+Охват задаётся тремя рамками, и все они сужают выборку:
   - JIRA_PROJECTS — ключи проектов. Что не перечислено, не выгружается;
   - JIRA_TEAM / JIRA_TEAM_GROUP — состав команды. Внутри общего проекта
-    берутся только задачи её людей.
+    берутся только задачи её людей;
+  - JIRA_SINCE — глубина истории. Задачи, которые не трогали год, в поиске
+    в основном шумят, а в индексации стоят дороже всего.
 Это и есть граница: что не попало в выгрузку, того нет и в базе.
 Аутентификации на портах пока нет, поэтому ограничивать надо не доступ к
 индексу, а его содержимое.
@@ -31,6 +33,7 @@
     JIRA_PROJECTS   DEVSEC,PLAT   ключи проектов через запятую
     JIRA_TEAM       логины команды через запятую: только их задачи
     JIRA_TEAM_GROUP имя группы Jira — то же самое, но составом рулит Jira
+    JIRA_SINCE      глубина истории: 30d, 6M или 2026-08-01
     JIRA_JQL        дополнительное условие, если нужно что-то своё
     JIRA_COMMENTS   1 — тянуть комментарии (по умолчанию), 0 — только описания
     JIRA_OUT        куда складывать (по умолчанию ./jira/issues)
@@ -342,17 +345,46 @@ def team_condition(logins: list[str], group: str) -> str:
     return " OR ".join(parts)
 
 
+def window_condition(value: str) -> str:
+    """JIRA_SINCE -> ограничение по глубине истории.
+
+    Принимает и относительный срок в понятиях JQL («30d», «-30d», «6M»), и
+    обычную дату («2026-08-01»). Старые задачи в поиске в основном шумят, а
+    в индексации стоят дороже всего — окно в месяц-два обычно и есть то, что
+    нужно на самом деле.
+
+    ОСТОРОЖНО с буквами: в JQL `m` — это МИНУТЫ, а месяцы — заглавная `M`.
+    «1m» вместо «1M» даёт окно в одну минуту и пустую выгрузку, поэтому на
+    строчную `m` предупреждаем вслух.
+    """
+    v = value.strip()
+    if not v:
+        return ""
+    if re.fullmatch(r"-?\d+[mhdwM]", v):
+        if v.rstrip("-").endswith("m"):
+            print(
+                f"    [!] JIRA_SINCE={v}: строчная 'm' в JQL значит МИНУТЫ. "
+                "Месяцы — заглавная 'M', дни — 'd'"
+            )
+        return f"updated >= {v if v.startswith('-') else '-' + v}"
+    return f'updated >= "{v}"'
+
+
 def build_jql(
-    projects: list[str], team: str, extra: str, since: str | None
+    projects: list[str], team: str, window: str, extra: str, since: str | None
 ) -> str:
-    """Условие выборки: проекты, состав команды, плюс своё условие и даты."""
+    """Условие выборки: проекты, состав команды, окно, своё условие и даты."""
     quoted = ", ".join(f'"{p}"' for p in projects)
     parts = [f"project in ({quoted})"]
     if team:
         parts.append(f"({team})")
+    if window:
+        parts.append(window)
     if extra:
         parts.append(f"({extra})")
     if since:
+        # Инкрементальность поверх окна: обе границы нижние, побеждает
+        # ближняя, поэтому конфликта нет
         parts.append(f'updated >= "{since}"')
     return " AND ".join(parts)
 
@@ -415,6 +447,12 @@ def main() -> int:
     ap.add_argument("--full", action="store_true", help="выгрузить всё, игнорируя даты")
     ap.add_argument("--dump-raw", metavar="FILE", help="сохранить сырой ответ API")
     ap.add_argument("--limit", type=int, help="ограничить число задач (для пробы)")
+    ap.add_argument(
+        "--since",
+        metavar="СРОК",
+        help="брать изменённые не раньше: 30d, 6M или 2026-08-01. "
+        "Перебивает JIRA_SINCE из .env",
+    )
     args = ap.parse_args()
 
     url = os.getenv("JIRA_URL", "").strip()
@@ -424,6 +462,7 @@ def main() -> int:
     projects_env = os.getenv("JIRA_PROJECTS", "").strip()
     team_env = os.getenv("JIRA_TEAM", "").strip()
     team_group = os.getenv("JIRA_TEAM_GROUP", "").strip()
+    since_env = (args.since or os.getenv("JIRA_SINCE", "")).strip()
     extra_jql = os.getenv("JIRA_JQL", "").strip()
     with_comments = os.getenv("JIRA_COMMENTS", "1").strip() != "0"
     out_dir = Path(os.getenv("JIRA_OUT", str(HERE / "issues")))
@@ -452,12 +491,17 @@ def main() -> int:
 
     team_logins = [u.strip() for u in team_env.split(",") if u.strip()]
     team = team_condition(team_logins, team_group)
+    window = window_condition(since_env)
 
     print(f"Проекты: {', '.join(projects)}")
     if team:
         print(f"Команда: {team}")
     else:
         print("Команда: не задана — поедут ВСЕ задачи перечисленных проектов")
+    if window:
+        print(f"Окно: {window}")
+    else:
+        print("Окно: не задано — поедет вся история проектов")
     if extra_jql:
         print(f"Доп. условие: {extra_jql}")
     print(f"Комментарии: {'да' if with_comments else 'нет'}")
@@ -465,8 +509,10 @@ def main() -> int:
     if args.check:
         for project in projects:
             try:
-                whole = client.count(build_jql([project], "", "", None))
-                mine = client.count(build_jql([project], team, extra_jql, None))
+                whole = client.count(build_jql([project], "", "", "", None))
+                mine = client.count(
+                    build_jql([project], team, window, extra_jql, None)
+                )
                 # Обе цифры сразу: видно, насколько сузила выборка команды.
                 # Если они совпали, условие не сработало — например, в JIRA_TEAM
                 # указаны отображаемые имена вместо логинов
@@ -484,7 +530,7 @@ def main() -> int:
     # правит задачи, и без запаса такие правки провалятся между прогонами
     started = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M")
 
-    jql = build_jql(projects, team, extra_jql, since)
+    jql = build_jql(projects, team, window, extra_jql, since)
     print(f"\nJQL: {jql}")
 
     try:

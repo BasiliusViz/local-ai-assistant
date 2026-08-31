@@ -81,6 +81,7 @@ services:
       - JIRA_PROJECTS=${JIRA_PROJECTS:-}
       - JIRA_TEAM=${JIRA_TEAM:-}
       - JIRA_TEAM_GROUP=${JIRA_TEAM_GROUP:-}
+      - JIRA_SINCE=${JIRA_SINCE:-}
       - JIRA_JQL=${JIRA_JQL:-}
       - JIRA_COMMENTS=${JIRA_COMMENTS:-1}
       - JIRA_OUT=/docs/jira
