@@ -85,6 +85,12 @@ services:
       - JIRA_JQL=${JIRA_JQL:-}
       - JIRA_COMMENTS=${JIRA_COMMENTS:-1}
       - JIRA_OUT=/docs/jira
+      # DefectDojo: живой запрос в момент вопроса, индекса нет.
+      # Проверка связи: docker compose exec kb python -m kb.dojo --check
+      - DOJO_URL=${DOJO_URL:-}
+      - DOJO_TOKEN=${DOJO_TOKEN:-}
+      - DOJO_PRODUCTS=${DOJO_PRODUCTS:-}
+      - DOJO_VERIFY_TLS=${DOJO_VERIFY_TLS:-1}
     # host.docker.internal (модель на этой же машине) сам по себе есть только
     # в Docker Desktop. На Linux с обычным Docker Engine имя не резолвится, и
     # kb молча теряет доступ к модели — при том что deploy.sh и healthcheck.sh

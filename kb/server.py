@@ -14,7 +14,7 @@ import sys
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
-from kb import code_retriever, config, jira_retriever
+from kb import code_retriever, config, dojo, jira_retriever
 from kb.embedder import EmbedError
 from kb.jira_retriever import JiraSearchError
 from kb.retriever import SearchError, known_values, search
@@ -384,6 +384,65 @@ def jira_search(
             "что нашёл именно запрошенное."
         ),
     }
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+)
+def dojo_findings(
+    product: str,
+    status: str = "open",
+    severity: str | None = None,
+    limit: int = 10,
+) -> dict:
+    """УЯЗВИМОСТИ ПРОДУКТА из DefectDojo: что нашли сканеры и что не закрыто.
+
+    ВЫЗЫВАЙ ТОЛЬКО ЕСЛИ В СООБЩЕНИИ ЕСТЬ СЛОВО «defectdojo» ИЛИ «dojo»
+    («дефектдоджо», «додж»). Вопрос про уязвимости сам по себе не повод: про
+    требования и регламенты безопасности отвечает kb_search, а тут лежат
+    находки сканеров по конкретным продуктам.
+
+    Данные берутся из DefectDojo В МОМЕНТ ВОПРОСА, а не из индекса, — они
+    всегда актуальны. Оговорок про дату здесь не нужно.
+
+    Отвечает на «что у нас по продукту X», «сколько критичных открыто»,
+    «что приняли как риск». Всегда возвращает сводку по уровням, даже когда
+    спросили про один: видеть картину целиком полезнее, чем один срез.
+
+    Примеры:
+      «@dojo что по продукту abinf»        -> product="abinf"
+      «@dojo критичные по abinf»           -> product="abinf", severity="критичные"
+      «@dojo что приняли как риск в abinf» -> product="abinf", status="accepted"
+
+    Args:
+        product: название продукта, можно неполно: "abinf"
+        status: "open" (по умолчанию, активные незакрытые), "accepted"
+            (принятый риск), "false_positive", "fixed", "all"
+        severity: уровень — критичный, высокий, средний, низкий,
+            информационный. Без него вернутся находки всех уровней
+        limit: сколько находок показать, по умолчанию 10
+
+    Returns:
+        product, summary (счётчики по уровням) и findings — список находок со
+        ссылками. В ответе ОБЯЗАТЕЛЬНО приводи ссылки: без них человеку некуда
+        идти разбираться. Начинай с самого серьёзного уровня.
+    """
+    if not dojo.configured():
+        return {
+            "error": (
+                "DefectDojo не подключён: нужны DOJO_URL и DOJO_TOKEN в .env. "
+                "Проверка связи — python -m kb.dojo --check"
+            )
+        }
+
+    try:
+        return dojo.report(
+            product=product, status=status, severity=severity, limit=limit
+        )
+    except dojo.DojoError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Запрос в DefectDojo не удался: {e}"}
 
 
 def main() -> None:
