@@ -113,10 +113,31 @@ code, .mono { font-family: "Cascadia Mono", Consolas, "DejaVu Sans Mono", monosp
 .block h4 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 6px; }
 .block div { white-space: pre-wrap; }
 .fix { border-left: 3px solid #2f7a52; padding-left: 12px; }
+
+/* Раскрывающиеся разделы: карточка остаётся обозримой, детали по клику */
+details { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 10px; }
+details summary {
+  cursor: pointer; font-size: 13px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted); list-style: none;
+}
+details summary::-webkit-details-marker { display: none; }
+details summary:before { content: "B8  "; }
+details[open] summary:before { content: "BE  "; }
+details .body { padding: 10px 0 4px; white-space: pre-wrap; }
+.advice { background: #fbfaf5; border-left: 3px solid #b08a2e; padding: 12px 14px; margin-top: 10px; }
+.advice .tag {
+  display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: #7a5f14; background: #f2e6c4; padding: 2px 7px; margin-bottom: 8px;
+}
+.advice .body { white-space: pre-wrap; }
 a { color: #1f5fa8; }
 footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
 
 @media print {
+  /* В печать всё уходит раскрытым: свёрнутый раздел на бумаге — потерянный
+     раздел, а документ печатают, чтобы приложить к задаче или отдать */
+  details > *:not(summary) { display: block !important; }
+  details summary:before { content: ""; }
   .wrap { padding: 0; max-width: none; }
   body { font-size: 11pt; }
   h2 { page-break-after: avoid; }
@@ -140,7 +161,46 @@ def block(title: str, text: str, extra: str = "") -> str:
     )
 
 
-def render(product: str, summary: dict, hits: list, note: str, filters: dict) -> str:
+def foldable(title: str, text: str) -> str:
+    """Длинный раздел под раскрытие.
+
+    Описания от сканеров бывают на пол-экрана, и в списке из сорока находок
+    они превращают документ в полотно. Свернём: обзор остаётся читаемым, а
+    подробности — по клику. На печати всё раскрывается принудительно.
+    """
+    if not (text or "").strip():
+        return ""
+    return (
+        f"<details><summary>{esc(title)}</summary>"
+        f'<div class="body">{esc(text.strip())}</div></details>'
+    )
+
+
+def advice_block(text: str) -> str:
+    """Предложение модели. Всегда с пометкой, что это не данные сканера.
+
+    В документе по безопасности смешивать найденное с придуманным нельзя:
+    читатель должен видеть, за что отвечает инструмент, а что нужно
+    перепроверить перед тем, как выносить в задачу.
+    """
+    if not (text or "").strip():
+        return ""
+    return (
+        '<details class="advice-wrap" open><summary>Предложение по исправлению</summary>'
+        '<div class="advice"><span class="tag">Составлено ассистентом, требует проверки</span>'
+        f'<div class="body">{esc(text.strip())}</div></div></details>'
+    )
+
+
+def render(
+    product: str,
+    summary: dict,
+    hits: list,
+    note: str,
+    filters: dict,
+    advice: dict | None = None,
+) -> str:
+    advice = advice or {}
     total = sum(summary.values())
     when = datetime.now().strftime("%d.%m.%Y")
 
@@ -185,9 +245,10 @@ def render(product: str, summary: dict, hits: list, note: str, filters: dict) ->
             f"</div>"
             f'<div class="finding-body">'
             + (f'<dl class="facts">{facts_html}</dl>' if facts_html else "")
-            + block("В чём проблема", hit.description)
             + block("Чем грозит", hit.impact)
-            + block("Как исправить", hit.mitigation, extra="fix")
+            + block("Как исправить (по данным сканера)", hit.mitigation, extra="fix")
+            + advice_block(advice.get(hit.finding_id, ""))
+            + foldable("Подробное описание находки", hit.description)
             + (f'<p><a href="{esc(hit.url)}">Открыть в DefectDojo</a></p>' if hit.url else "")
             + "</div></div>"
         )
@@ -238,6 +299,91 @@ def plural(n: int, one: str, few: str, many: str) -> str:
     else:
         form = many
     return f"{n} {form}"
+
+
+
+ADVICE_PROMPT = """Ты инженер по безопасности приложений. По найденной уязвимости
+напиши, что конкретно сделать разработчику.
+
+Находка: {title}
+Уровень: {severity}
+Класс: {cwe}
+Компонент: {component}
+Место: {location}
+Описание: {description}
+Рекомендация сканера: {mitigation}
+
+Требования к ответу:
+- три-пять предложений, по делу, без вступлений;
+- начни с самого действия, а не с пересказа проблемы;
+- если данных не хватает на конкретику, так и скажи и назови, что уточнить;
+- ничего не выдумывай про наш код: ты видишь только то, что выше.
+
+Ответ:"""
+
+
+def advise(hits: list, limit: int) -> dict:
+    """Предложения по исправлению для самых серьёзных находок.
+
+    Зовём модель по одной находке: так ответ конкретнее, чем при пересказе
+    списком, и обрыв на одной не портит остальные. Ограничиваем количество —
+    каждый вызов это секунды, а на сорока находках отчёт собирался бы полчаса.
+
+    Любая ошибка молча пропускается: документ без предложения полезнее, чем
+    отсутствие документа.
+    """
+    import requests
+
+    out: dict[str, str] = {}
+    if limit <= 0:
+        return out
+
+    native = config.OLLAMA_API == "native"
+    url = config.chat_url()
+    headers = {"Content-Type": "application/json", **config.auth_headers()}
+
+    for hit in hits[:limit]:
+        prompt = ADVICE_PROMPT.format(
+            title=hit.title or "—",
+            severity=SEVERITY_RU.get(hit.severity, hit.severity),
+            cwe=hit.cwe or "не указан",
+            component=hit.component or "не указан",
+            location=hit.location or "не указано",
+            description=(hit.description or "нет описания")[:1500],
+            mitigation=(hit.mitigation or "нет")[:800],
+        )
+        body = {"model": config.EXPAND_MODEL, "stream": False}
+        if native:
+            body["messages"] = [{"role": "user", "content": prompt}]
+            body["options"] = {"num_predict": 400}
+        else:
+            body["messages"] = [{"role": "user", "content": prompt}]
+            body["max_tokens"] = 400
+
+        try:
+            resp = requests.post(url, json=body, headers=headers, timeout=180)
+            resp.raise_for_status()
+            data = resp.json()
+            text = (
+                data.get("message", {}).get("content", "")
+                if native
+                else data["choices"][0]["message"]["content"]
+            )
+        except Exception as e:
+            log.debug("предложение для %s не получено: %s", hit.finding_id, e)
+            print(f"  [!] находка {hit.finding_id}: предложение не получено ({e})")
+            continue
+
+        text = text.strip()
+        # Некоторые модели пишут ход рассуждений перед ответом — в документ
+        # ему не место
+        if "</think>" in text:
+            text = text.split("</think>", 1)[1].strip()
+        if text:
+            out[hit.finding_id] = text
+            print(f"  предложение готово: находка {hit.finding_id}")
+
+    return out
 
 
 def narrative(product: str, summary: dict, shown: int) -> str:
@@ -349,6 +495,14 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=50, help="сколько находок включить")
     ap.add_argument("-o", "--out", help="куда сохранить (по умолчанию /docs/reports)")
     ap.add_argument(
+        "--advice",
+        type=int,
+        default=0,
+        metavar="N",
+        help="попросить модель предложить исправление для N самых серьёзных "
+        "находок (0 — не просить). Каждая занимает секунды",
+    )
+    ap.add_argument(
         "--server",
         metavar="URL",
         help="взять находки с MCP-сервера (http://СЕРВЕР:8012) и сохранить файл "
@@ -377,6 +531,11 @@ def main() -> int:
         print(f"Не удалось получить находки: {e}")
         return 1
 
+    advice = {}
+    if args.advice:
+        print(f"Готовлю предложения по исправлению (до {args.advice} находок)...")
+        advice = advise(hits, args.advice)
+
     default_dir = Path.cwd() if args.server else Path("/docs/reports")
     out = Path(args.out) if args.out else default_dir / (
         f"{name.replace('/', '-')}-{datetime.now():%Y-%m-%d}.html"
@@ -389,6 +548,7 @@ def main() -> int:
             hits,
             narrative(name, summary, len(hits)),
             {"состояние": args.status, "уровень": args.severity or "все"},
+            advice,
         ),
         encoding="utf-8",
     )
