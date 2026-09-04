@@ -238,6 +238,17 @@ def index(records: list[dict], collection: str, batch: int) -> int:
                             "component": record["component"],
                             "location": record["location"],
                             "found_at": record["date"],
+                            # Описание и рекомендация кладутся ПОЛЯМИ, а не
+                            # только в текст для поиска. Без этого отчёт по
+                            # продукту получался с пустой графой «как чинить»:
+                            # текст рекомендации доставался лишь тогда, когда
+                            # находку нашли смысловым поиском, а при отборе по
+                            # фильтру — нет. Пишем только в первый чанк:
+                            # дублировать в каждый незачем, а карточку
+                            # retriever и так предпочитает при выборке
+                            "description": record["description"] if start + i == 0 else "",
+                            "mitigation": record["mitigation"] if start + i == 0 else "",
+                            "impact": record["impact"] if start + i == 0 else "",
                         },
                     )
                     for i, (piece, vec) in enumerate(zip(part, vectors))

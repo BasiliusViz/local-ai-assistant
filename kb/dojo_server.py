@@ -81,6 +81,16 @@ def dojo_findings(
       «dojo критичные по abinf»           -> product="abinf", severity="критичные"
       «dojo что приняли как риск в abinf» -> product="abinf", status="принятые"
       «dojo что по инъекциям в abinf»     -> product="abinf", query="инъекции"
+      «dojo подготовь документ по abinf»  -> product="abinf",
+                                             response_format="report"
+
+    Про режим "report". По нему пишется документ: сводка по уровням, затем
+    по каждой находке — в чём проблема, чем грозит, что предлагает сканер,
+    где в коде и ссылка на проверку. Бери текст ИЗ ПОЛЕЙ description,
+    impact и mitigation, а не из своих знаний: там написано то, что нашёл
+    конкретный сканер в конкретном месте. Ответ длинный, поэтому при
+    просьбе сделать документ разумно сузить отбор — например только
+    критичные и высокие.
 
     Сводка по уровням возвращается ВСЕГДА, даже если спросили про один: «три
     критичных» без общей картины вводит в заблуждение — непонятно, три из трёх
@@ -99,8 +109,10 @@ def dojo_findings(
         query: тема, если она есть в вопросе. Ищет по описаниям находок и
             рекомендациям по устранению
         limit: сколько находок показать, по умолчанию 25
-        response_format: "concise" (по умолчанию) или "detailed" — со сканером,
-            CWE, датой и текстом находки
+        response_format: "concise" (по умолчанию) — номер, заголовок, уровень,
+            статус, ссылка. "detailed" — плюс сканер, CWE, дата и найденный
+            фрагмент. "report" — всё для документа: описание проблемы, чем
+            грозит и что предлагает сканер для исправления
 
     Returns:
         product, summary (счётчики по уровням), applied_filters и findings —
@@ -114,6 +126,7 @@ def dojo_findings(
             severity=severity,
             query=query,
             limit=limit,
+            report=response_format == "report",
         )
     except dojo_retriever.DojoSearchError as e:
         return {"error": str(e)}
@@ -125,13 +138,14 @@ def dojo_findings(
         return {"error": f"Поиск по находкам не удался: {e}"}
 
     detailed = response_format == "detailed"
+    report = response_format == "report"
     hits = result["hits"]
     return {
         "product": result["product"],
         "summary": result["summary"],
         "applied_filters": result["applied_filters"],
         "found": len(hits),
-        "findings": [h.as_dict(detailed=detailed) for h in hits],
+        "findings": [h.as_dict(detailed=detailed, report=report) for h in hits],
         "citation_instruction": (
             "Начни со сводки по уровням, потом перечисли находки со ссылками. "
             "Данные из индекса, а не из живого DefectDojo: если речь о "

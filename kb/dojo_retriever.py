@@ -58,11 +58,14 @@ class Hit:
     location: str
     url: str
     found_at: str
+    description: str = ""
+    mitigation: str = ""
+    impact: str = ""
     snippet: str = ""
     score: float = 0.0
     chunk_idx: int = 0
 
-    def as_dict(self, detailed: bool = False) -> dict:
+    def as_dict(self, detailed: bool = False, report: bool = False) -> dict:
         out = {
             "id": self.finding_id,
             "title": self.title,
@@ -74,7 +77,23 @@ class Hit:
             out["component"] = self.component
         if self.location:
             out["location"] = self.location
-        if detailed:
+        if report:
+            # Всё, из чего пишется документ: в чём проблема, чем грозит и что
+            # предлагает сканер. Без этих трёх полей в отчёте графа «как
+            # чинить» заполнялась бы общими знаниями модели, а не тем, что
+            # реально написано в находке
+            out.update(
+                {
+                    "product": self.product,
+                    "scanner": self.scanner,
+                    "cwe": self.cwe,
+                    "found": self.found_at[:10],
+                    "description": self.description,
+                    "impact": self.impact,
+                    "mitigation": self.mitigation,
+                }
+            )
+        elif detailed:
             out.update(
                 {
                     "product": self.product,
@@ -228,11 +247,60 @@ def _dedupe(points, limit: int) -> list[Hit]:
             location=pl.get("location", ""),
             url=pl.get("url", ""),
             found_at=pl.get("found_at", ""),
+            description=pl.get("description", ""),
+            mitigation=pl.get("mitigation", ""),
+            impact=pl.get("impact", ""),
             snippet=pl.get("text", ""),
             score=score,
             chunk_idx=idx,
         )
     return list(seen.values())[:limit]
+
+
+
+def _enrich(hits: list[Hit]) -> None:
+    """Дописать описание и рекомендацию в найденные находки.
+
+    Нужно, потому что описание с рекомендацией лежат только в ПЕРВОМ чанке
+    находки, а смысловой поиск мог выбрать любой другой — например тот, где
+    совпало слово из обсуждения. Тогда отчёт остался бы без самого главного.
+    Догружаем карточки одним запросом на всю выдачу.
+    """
+    missing = [h for h in hits if not h.description and not h.mitigation]
+    if not missing:
+        return
+    try:
+        points, _ = client().scroll(
+            collection_name=config.COLLECTION,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="source", match=models.MatchValue(value=SOURCE)
+                    ),
+                    models.FieldCondition(
+                        key="finding_id",
+                        match=models.MatchAny(any=[h.finding_id for h in missing]),
+                    ),
+                    models.FieldCondition(
+                        key="chunk_idx", match=models.MatchValue(value=0)
+                    ),
+                ]
+            ),
+            limit=len(missing) + 5,
+            with_payload=True,
+        )
+    except Exception as e:
+        log.debug("не удалось догрузить карточки находок: %s", e)
+        return
+
+    cards = {(p.payload or {}).get("finding_id", ""): (p.payload or {}) for p in points}
+    for hit in missing:
+        card = cards.get(hit.finding_id)
+        if not card:
+            continue
+        hit.description = card.get("description", "")
+        hit.mitigation = card.get("mitigation", "")
+        hit.impact = card.get("impact", "")
 
 
 # Порядок серьёзности для сортировки выборки: сначала худшее
@@ -245,6 +313,7 @@ def search(
     severity: str | None = None,
     query: str | None = None,
     limit: int = 10,
+    report: bool = False,
 ) -> dict:
     """Находки продукта: сводка по уровням плюс сами находки."""
     if not available():
@@ -309,6 +378,9 @@ def search(
         hits = _dedupe(points, len(points))
         hits.sort(key=lambda h: (SEVERITY_ORDER.get(h.severity, 9), h.found_at))
         hits = hits[:limit]
+
+    if report:
+        _enrich(hits)
 
     return {
         "product": name,
