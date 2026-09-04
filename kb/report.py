@@ -5,23 +5,32 @@
 конце — что именно вошло в выборку. Модель не участвует: документ собирается
 из данных DefectDojo, поэтому воспроизводим и не выдумывает.
 
-Необязательный `--summarize` добавляет абзац-резюме, написанный моделью по
-уже собранным цифрам. Не получилось — документ выйдет без него, это не повод
-терять отчёт.
+Резюме для руководства собирается шаблоном по счётчикам, а не моделью:
+это то место, где выдумка обходится дороже всего.
 
 Файл самодостаточный: стили внутри, шрифты системные, картинок нет. В
 закрытом контуре это принципиально — ничего не подгружается снаружи.
 Печать в PDF: открыть в браузере и Ctrl+P, вёрстка для печати предусмотрена.
 
-Запуск (в контейнере, чтобы файл лёг в смонтированный каталог):
+Два способа запуска.
+
+На сервере, в контейнере — файл ложится в смонтированный каталог:
 
     docker compose exec kb python -m kb.report --product abinf
     docker compose exec kb python -m kb.report --product abinf --severity критичные
-    docker compose exec kb python -m kb.report --product abinf -o /docs/reports/abinf.html
+
+С рабочей машины — находки берутся с MCP-сервера, файл пишется рядом:
+
+    python -m kb.report --product abinf --server http://СЕРВЕР:8012
+
+Второй способ ничего не требует, кроме доступа к порту: ни базы, ни
+DefectDojo, ни докера. Рендер работает от списка находок, а откуда он
+взялся — ему безразлично.
 """
 
 import argparse
 import html
+import json
 import logging
 import sys
 from datetime import datetime
@@ -262,6 +271,74 @@ def narrative(product: str, summary: dict, shown: int) -> str:
     return " ".join(parts)
 
 
+
+def from_server(url: str, product: str, status: str, severity: str | None, limit: int):
+    """Забрать находки с MCP-сервера вместо обращения к Qdrant.
+
+    Нужно, чтобы отчёт можно было собрать с рабочей машины: рендер ничего не
+    знает ни про базу, ни про DefectDojo, ему хватает списка находок. Тогда
+    файл ложится там, где его запустили, а не на сервере — копировать ничего
+    не надо.
+    """
+    import requests
+
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "dojo_findings",
+            "arguments": {
+                "product": product,
+                "status": status,
+                "limit": limit,
+                "response_format": "report",
+            },
+        },
+    }
+    if severity:
+        body["params"]["arguments"]["severity"] = severity
+
+    resp = requests.post(
+        f"{url.rstrip('/')}/mcp",
+        json=body,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+        timeout=180,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if "error" in data:
+        raise RuntimeError(data["error"].get("message", "сервер вернул ошибку"))
+
+    payload = json.loads(data["result"]["content"][0]["text"])
+    if "error" in payload:
+        raise RuntimeError(payload["error"])
+
+    hits = [
+        dojo_retriever.Hit(
+            finding_id=str(f.get("id", "")),
+            title=f.get("title", ""),
+            severity=f.get("severity", ""),
+            status=f.get("status", ""),
+            product=f.get("product", product),
+            scanner=f.get("scanner", ""),
+            cwe=f.get("cwe", ""),
+            component=f.get("component", ""),
+            location=f.get("location", ""),
+            url=f.get("url", ""),
+            found_at=f.get("found", ""),
+            description=f.get("description", ""),
+            mitigation=f.get("mitigation", ""),
+            impact=f.get("impact", ""),
+        )
+        for f in payload.get("findings", [])
+    ]
+    return payload.get("product", product), payload.get("summary", {}), hits
+
+
 def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
@@ -271,25 +348,37 @@ def main() -> int:
     ap.add_argument("--status", default="open", help="состояние, по умолчанию open")
     ap.add_argument("--limit", type=int, default=50, help="сколько находок включить")
     ap.add_argument("-o", "--out", help="куда сохранить (по умолчанию /docs/reports)")
+    ap.add_argument(
+        "--server",
+        metavar="URL",
+        help="взять находки с MCP-сервера (http://СЕРВЕР:8012) и сохранить файл "
+        "локально — так отчёт собирается с рабочей машины, без доступа к базе",
+    )
     args = ap.parse_args()
 
     try:
-        result = dojo_retriever.search(
-            product=args.product,
-            status=args.status,
-            severity=args.severity,
-            limit=args.limit,
-            report=True,
-        )
+        if args.server:
+            name, summary, hits = from_server(
+                args.server, args.product, args.status, args.severity, args.limit
+            )
+        else:
+            result = dojo_retriever.search(
+                product=args.product,
+                status=args.status,
+                severity=args.severity,
+                limit=args.limit,
+                report=True,
+            )
+            hits, summary, name = result["hits"], result["summary"], result["product"]
     except (dojo_retriever.DojoSearchError, dojo.DojoError) as e:
         print(e)
         return 1
+    except Exception as e:
+        print(f"Не удалось получить находки: {e}")
+        return 1
 
-    hits = result["hits"]
-    summary = result["summary"]
-    name = result["product"]
-
-    out = Path(args.out) if args.out else Path("/docs/reports") / (
+    default_dir = Path.cwd() if args.server else Path("/docs/reports")
+    out = Path(args.out) if args.out else default_dir / (
         f"{name.replace('/', '-')}-{datetime.now():%Y-%m-%d}.html"
     )
     out.parent.mkdir(parents=True, exist_ok=True)
