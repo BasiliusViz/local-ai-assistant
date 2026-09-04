@@ -32,6 +32,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import requests
@@ -207,11 +208,13 @@ def check_model(rep: Report, verify: bool) -> None:
 
     # --- генерация и, главное, чем она закончилась
     check_truncation(rep, base, headers, gen, native, verify)
+    check_long_answer(rep, base, headers, gen, native, verify)
 
 
-def _chat(base, headers, model, native, verify, options: dict | None):
-    """Один запрос к модели. Возвращает (текст, причина остановки)."""
-    prompt = "Ответь тремя предложениями: что такое дежурство в ИТ-команде?"
+def _chat(base, headers, model, native, verify, options: dict | None, prompt: str | None = None):
+    """Один запрос к модели. Возвращает (текст, причина остановки, секунды)."""
+    prompt = prompt or "Ответь тремя предложениями: что такое дежурство в ИТ-команде?"
+    started = time.monotonic()
 
     if native:
         payload = {
@@ -226,7 +229,11 @@ def _chat(base, headers, model, native, verify, options: dict | None):
         )
         resp.raise_for_status()
         data = resp.json()
-        return data.get("message", {}).get("content", ""), data.get("done_reason", "")
+        return (
+            data.get("message", {}).get("content", ""),
+            data.get("done_reason", ""),
+            time.monotonic() - started,
+        )
 
     payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
     if options:
@@ -242,7 +249,11 @@ def _chat(base, headers, model, native, verify, options: dict | None):
     )
     resp.raise_for_status()
     choice = resp.json()["choices"][0]
-    return choice["message"]["content"], choice.get("finish_reason", "")
+    return (
+        choice["message"]["content"],
+        choice.get("finish_reason", ""),
+        time.monotonic() - started,
+    )
 
 
 def check_truncation(rep, base, headers, model, native, verify) -> None:
@@ -253,14 +264,14 @@ def check_truncation(rep, base, headers, model, native, verify) -> None:
     второй нет — виноваты умолчания, и лечится это в конфиге клиента.
     """
     try:
-        plain, reason = _chat(base, headers, model, native, verify, None)
+        plain, reason, spent = _chat(base, headers, model, native, verify, None)
     except requests.RequestException as e:
         rep.bad("модель отвечает", why(e))
         return
 
     words = len(plain.split())
     if reason in ("stop", "", None) and words >= 5:
-        rep.ok("модель отвечает целиком", f"{words} слов, причина: {reason or 'stop'}")
+        rep.ok("модель отвечает целиком", f"{words} слов за {spent:.0f} с, причина: {reason or 'stop'}")
         rep.note(plain[:160].replace("\n", " "))
         return
 
@@ -271,7 +282,7 @@ def check_truncation(rep, base, headers, model, native, verify) -> None:
     rep.note(f"ответ: {plain[:160]!r}")
 
     try:
-        fixed, reason2 = _chat(
+        fixed, _, _ = _chat(
             base, headers, model, native, verify,
             {"num_ctx": 32768, "num_predict": 1024},
         )
@@ -290,6 +301,56 @@ def check_truncation(rep, base, headers, model, native, verify) -> None:
         rep.note(
             "с явными пределами короче не стало — причина не в контексте, "
             "смотрите в сторону шлюза или самой модели"
+        )
+
+
+
+LONG_PROMPT = (
+    "Подробно, по пунктам, опиши пятнадцать этапов разбора найденной "
+    "уязвимости в веб-приложении. Каждый пункт — два-три предложения."
+)
+
+
+def check_long_answer(rep, base, headers, model, native, verify) -> None:
+    """Обрывается ли ДЛИННЫЙ ответ, и по какому пределу.
+
+    Обрыв на середине бывает двух природ, и лечатся они в разных местах.
+    По длине — упёрлись в лимит вывода, поднимается maxTokens у клиента.
+    По времени — поток режет прокси или шлюз, и это не к нам.
+    Отличить можно только замером: смотрим, сколько слов успело выйти и за
+    сколько секунд.
+    """
+    try:
+        text, reason, spent = _chat(
+            base, headers, model, native, verify,
+            {"num_ctx": 32768, "num_predict": 4096},
+            LONG_PROMPT,
+        )
+    except requests.RequestException as e:
+        rep.bad("длинный ответ доходит целиком", why(e))
+        return
+
+    words = len(text.split())
+    tail = " ".join(text.rstrip()[-40:].split())
+
+    if reason in ("stop", "", None):
+        rep.ok("длинный ответ доходит целиком", f"{words} слов за {spent:.0f} с")
+        return
+
+    rep.bad(
+        "длинный ответ доходит целиком",
+        f"оборвано: {words} слов за {spent:.0f} с, причина: {reason}",
+    )
+    rep.note(f"кончилось на: ...{tail}")
+    if reason == "length":
+        rep.note(
+            "упёрлись в лимит вывода — поднимите maxTokens в конфиге Continue "
+            "(num_predict здесь был 4096)"
+        )
+    else:
+        rep.note(
+            "причина не в лимите вывода. Если обрыв повторяется примерно на той "
+            "же СЕКУНДЕ, а не на том же объёме, поток режет прокси или шлюз"
         )
 
 
