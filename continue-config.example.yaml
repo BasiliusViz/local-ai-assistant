@@ -24,6 +24,16 @@ models:
     model: qwen3:8b
     apiBase: http://АДРЕС-OLLAMA:11434
     roles: [chat, edit]
+    # Пределы генерации. contextLength — сколько Continue разрешено набить в
+    # промпт, maxTokens — сколько модели позволено ответить.
+    # Значение должно совпадать с РЕАЛЬНЫМ окном на сервере Ollama, а не с
+    # тем, сколько модель способна вместить: Ollama поднимает её со своим
+    # num_ctx, и если написать больше, Continue переполнит промпт, а лишнее
+    # молча отвалится вместе с концом ответа — на вид «оборвалось на середине».
+    # Измерить окно, не имея доступа к серверу: python selftest.py --probe-context
+    defaultCompletionOptions:
+      contextLength: 16384
+      maxTokens: 2048
     # Именно requestOptions.headers, а НЕ apiKey: apiKey уходит как
     # "Authorization: Bearer <токен>", а шлюз ждёт заголовок x-api-key.
     # Если Ollama без шлюза — блок requestOptions убрать целиком.
