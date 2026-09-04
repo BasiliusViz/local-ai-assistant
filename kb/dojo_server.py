@@ -62,7 +62,7 @@ def dojo_findings(
     status: str = "open",
     severity: str | None = None,
     query: str | None = None,
-    limit: int = 10,
+    limit: int = 25,
     response_format: str = "concise",
 ) -> dict:
     """УЯЗВИМОСТИ ПРОДУКТА из DefectDojo: что нашли сканеры и что не закрыто.
@@ -98,7 +98,7 @@ def dojo_findings(
             информационный. Без него вернутся все
         query: тема, если она есть в вопросе. Ищет по описаниям находок и
             рекомендациям по устранению
-        limit: сколько находок показать, по умолчанию 10
+        limit: сколько находок показать, по умолчанию 25
         response_format: "concise" (по умолчанию) или "detailed" — со сканером,
             CWE, датой и текстом находки
 
