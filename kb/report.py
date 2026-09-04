@@ -322,7 +322,23 @@ ADVICE_PROMPT = """Ты инженер по безопасности прило�
 Ответ:"""
 
 
-def advise(hits: list, limit: int) -> dict:
+def chat_endpoint(base: str | None) -> str:
+    """Куда слать запрос к модели.
+
+    Без ключа берём адрес из настроек. С ключом — собираем от переданного:
+    в .env сервера адрес модели часто записан именем, которое резолвится
+    только внутри докера (host.docker.internal), и с рабочей машины по нему
+    не достучаться.
+    """
+    if not base:
+        return config.chat_url()
+    base = base.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3].rstrip("/")
+    return f"{base}/api/chat" if config.OLLAMA_API == "native" else f"{base}/v1/chat/completions"
+
+
+def advise(hits: list, limit: int, ollama: str | None = None) -> dict:
     """Предложения по исправлению для самых серьёзных находок.
 
     Зовём модель по одной находке: так ответ конкретнее, чем при пересказе
@@ -339,7 +355,8 @@ def advise(hits: list, limit: int) -> dict:
         return out
 
     native = config.OLLAMA_API == "native"
-    url = config.chat_url()
+    url = chat_endpoint(ollama)
+    print(f"  модель: {config.EXPAND_MODEL} на {url}")
     headers = {"Content-Type": "application/json", **config.auth_headers()}
 
     for hit in hits[:limit]:
@@ -372,6 +389,10 @@ def advise(hits: list, limit: int) -> dict:
         except Exception as e:
             log.debug("предложение для %s не получено: %s", hit.finding_id, e)
             print(f"  [!] находка {hit.finding_id}: предложение не получено ({e})")
+            print(
+                f"      адрес модели: {url}. Если он не виден с этой машины, "
+                "задайте свой ключом --ollama http://АДРЕС:11434"
+            )
             continue
 
         text = text.strip()
@@ -503,6 +524,12 @@ def main() -> int:
         "находок (0 — не просить). Каждая занимает секунды",
     )
     ap.add_argument(
+        "--ollama",
+        metavar="URL",
+        help="адрес модели, если из .env не подходит: в нём часто записано имя, "
+        "которое резолвится только внутри докера",
+    )
+    ap.add_argument(
         "--server",
         metavar="URL",
         help="взять находки с MCP-сервера (http://СЕРВЕР:8012) и сохранить файл "
@@ -534,7 +561,7 @@ def main() -> int:
     advice = {}
     if args.advice:
         print(f"Готовлю предложения по исправлению (до {args.advice} находок)...")
-        advice = advise(hits, args.advice)
+        advice = advise(hits, args.advice, args.ollama)
 
     default_dir = Path.cwd() if args.server else Path("/docs/reports")
     out = Path(args.out) if args.out else default_dir / (

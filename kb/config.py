@@ -1,21 +1,78 @@
 """Настройки поиска по базе знаний. Всё переопределяется переменными окружения."""
 
 import os
+from pathlib import Path
+
+
+def _load_env_file() -> None:
+    """Подтянуть .env из корня проекта, если скрипт запущен вне контейнера.
+
+    В контейнере переменные приходят от docker-compose, и файла там нет — эта
+    функция просто ничего не найдёт. А при запуске руками с рабочей машины
+    (kb/report.py, kb/selftest и прочие) читать настройки больше неоткуда.
+
+    Уже заданные переменные окружения не перетираются: они важнее файла.
+    """
+    for folder in (Path(__file__).resolve().parent.parent, Path.cwd()):
+        env_file = folder / ".env"
+        if not env_file.exists():
+            continue
+        try:
+            lines = env_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        return
+
+
+_load_env_file()
+
+
+
+def _env(name: str, fallback: str, default: str) -> str:
+    """Переменная с префиксом KB_, иначе та же без префикса, иначе умолчание.
+
+    Внутри контейнера всё приходит как KB_*: их подставляет docker-compose,
+    отделяя настройки поиска от настроек остального стека. А в .env те же
+    значения лежат под именами без префикса (OLLAMA_URL, GEN_MODEL) — и когда
+    скрипт запускают руками с рабочей машины, KB_* просто нет.
+
+    Без этого запаса kb/report.py и подобные молча брали умолчание
+    http://localhost:11434 и стучались в собственную машину вместо сервера
+    с моделью.
+    """
+    value = os.getenv(name)
+    if value is not None and value.strip():
+        return value
+    value = os.getenv(fallback)
+    if value is not None and value.strip():
+        return value
+    return default
+
 
 # Ollama. Обращаемся по OpenAI-совместимому /v1, а не /api/*:
 # впереди переезд на vLLM, и так менять придётся только базовый URL.
-OLLAMA_URL = os.getenv("KB_OLLAMA_URL", "http://localhost:11434/v1")
-EMBED_MODEL = os.getenv("KB_EMBED_MODEL", "bge-m3")
+OLLAMA_URL = _env("KB_OLLAMA_URL", "OLLAMA_URL", "http://localhost:11434/v1")
+EMBED_MODEL = _env("KB_EMBED_MODEL", "EMBED_MODEL", "bge-m3")
 EMBED_DIM = 1024
 
 # Ключ доступа к Ollama. У самой Ollama аутентификации нет, но в проде она
 # обычно стоит за прокси или за OpenAI-совместимым шлюзом (vLLM, LiteLLM),
 # который ключ требует. Пусто - заголовок не отправляется вовсе.
-OLLAMA_API_KEY = os.getenv("KB_OLLAMA_API_KEY", "").strip()
+OLLAMA_API_KEY = _env("KB_OLLAMA_API_KEY", "OLLAMA_API_KEY", "").strip()
 # Разные шлюзы ждут ключ по-разному: Bearer - стандарт OpenAI-совместимых,
 # x-api-key встречается у прокси-серверов
-OLLAMA_AUTH_HEADER = os.getenv("KB_OLLAMA_AUTH_HEADER", "Authorization").strip()
-OLLAMA_AUTH_PREFIX = os.getenv("KB_OLLAMA_AUTH_PREFIX", "Bearer ")
+OLLAMA_AUTH_HEADER = _env("KB_OLLAMA_AUTH_HEADER", "OLLAMA_AUTH_HEADER", "Authorization").strip()
+# Пустой префикс — осмысленное значение (для x-api-key), поэтому здесь
+# нельзя использовать _env: он считает пустую строку отсутствием
+OLLAMA_AUTH_PREFIX = os.getenv(
+    "KB_OLLAMA_AUTH_PREFIX", os.getenv("OLLAMA_AUTH_PREFIX", "Bearer ")
+)
 
 
 def auth_headers() -> dict[str, str]:
@@ -29,7 +86,7 @@ def auth_headers() -> dict[str, str]:
 # или родное для Ollama (/api/embed, /api/chat). Шлюзы иногда пробрасывают
 # только одно из двух. По умолчанию OpenAI-совместимое — задел на переезд
 # с Ollama на vLLM, где родного API нет вовсе.
-OLLAMA_API = os.getenv("KB_OLLAMA_API", "openai").strip().lower()
+OLLAMA_API = _env("KB_OLLAMA_API", "OLLAMA_API", "openai").strip().lower()
 
 # База без /v1 — нужна для родных путей
 OLLAMA_BASE = OLLAMA_URL[:-3] if OLLAMA_URL.endswith("/v1") else OLLAMA_URL
@@ -48,7 +105,7 @@ def chat_url() -> str:
     return f"{OLLAMA_URL}/chat/completions"
 
 # Qdrant
-QDRANT_URL = os.getenv("KB_QDRANT_URL", "http://localhost:6333")
+QDRANT_URL = _env("KB_QDRANT_URL", "QDRANT_URL", "http://localhost:6333")
 COLLECTION = os.getenv("KB_COLLECTION", "knowledge")
 DENSE_VECTOR = "dense"
 
@@ -81,7 +138,7 @@ MIN_SCORE = float(os.getenv("KB_MIN_SCORE", "0.48"))
 # Лечит разрыв в словаре («отложить работу» -> stash), с которым не
 # справляется ни один ранжировщик: нужный чанк просто не доезжает до него.
 EXPAND = os.getenv("KB_EXPAND", "1") == "1"
-EXPAND_MODEL = os.getenv("KB_EXPAND_MODEL", "qwen3:8b")
+EXPAND_MODEL = _env("KB_EXPAND_MODEL", "GEN_MODEL", "qwen3:8b")
 EXPAND_VARIANTS = int(os.getenv("KB_EXPAND_VARIANTS", "2"))
 EXPAND_TIMEOUT = 120.0
 # Расширять не всегда, а только когда обычный поиск не уверен: переформулировка
