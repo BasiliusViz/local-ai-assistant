@@ -354,6 +354,82 @@ def check_long_answer(rep, base, headers, model, native, verify) -> None:
         )
 
 
+
+# Кодовое слово кладём в САМОЕ НАЧАЛО промпта. Если окно меньше присланного,
+# начало обрезается первым — значит слово исчезнет, и это видно по ответу
+MARKER = "АРБУЗ-7431"
+
+FILLER = (
+    "Дежурный инженер фиксирует обращение, проверяет журналы сервиса и "
+    "передаёт смену по регламенту. "
+)
+
+
+def probe_context(rep: Report, verify: bool, sizes: list[int]) -> None:
+    """Сколько контекста модель РЕАЛЬНО видит.
+
+    Спросить сервер не всегда можно: шлюзы часто пробрасывают только чат и
+    эмбеддинги, а /api/ps закрывают. Тогда окно измеряется снаружи: кладём
+    кодовое слово в начало, набиваем промпт до нужного объёма и просим слово
+    назвать. Назвало — значит начало промпта до модели доехало.
+
+    Размеры приблизительные: на русском тексте примерно три символа на токен,
+    точность здесь и не нужна — важно, между какими порогами проходит граница.
+    """
+    rep.section("Реальное окно контекста")
+    rep.note("проба идёт от меньшего к большему, каждый шаг — отдельный запрос")
+
+    base = ollama_base()
+    headers = auth_headers()
+    model = os.getenv("GEN_MODEL", "qwen3:8b").strip()
+    native = os.getenv("OLLAMA_API", "openai").strip().lower() == "native"
+
+    last_ok = 0
+    for tokens in sizes:
+        # ~3 символа на токен, минус место под инструкции
+        filler = (FILLER * (tokens * 3 // len(FILLER) + 1))[: tokens * 3]
+        prompt = (
+            f"Запомни кодовое слово: {MARKER}. Оно понадобится в конце.\n\n"
+            f"{filler}\n\n"
+            "Назови кодовое слово из начала этого сообщения. "
+            "Ответь только словом, без пояснений."
+        )
+        try:
+            text, _, spent = _chat(
+                base, headers, model, native, verify,
+                {"num_predict": 32}, prompt,
+            )
+        except requests.RequestException as e:
+            rep.bad(f"промпт ~{tokens} токенов", why(e))
+            print("\n  Проба прервалась на сетевой ошибке — измерить окно не вышло.")
+            print("  Сначала добейтесь, чтобы модель отвечала: python selftest.py")
+            return
+
+        if MARKER in text.upper():
+            rep.ok(f"промпт ~{tokens} токенов", f"начало видно ({spent:.0f} с)")
+            last_ok = tokens
+        else:
+            rep.bad(
+                f"промпт ~{tokens} токенов",
+                f"начало потеряно — ответ: {text.strip()[:40]!r}",
+            )
+            break
+
+    print()
+    if last_ok == 0:
+        print("  Модель не увидела начало даже самого короткого промпта —")
+        print("  либо окно совсем крошечное, либо она просто не поняла задание.")
+    elif last_ok == sizes[-1]:
+        print(f"  Окно не меньше ~{last_ok} токенов: обрезки нет на всех пробах.")
+        print("  Значит обрыв ответов вызван не размером контекста.")
+    else:
+        print(f"  Граница между ~{last_ok} и следующей пробой.")
+        print(f"  То есть реально доступно около {last_ok} токенов, а не столько,")
+        print("  сколько написано в contextLength у клиента. Ставьте в конфиге")
+        print(f"  Continue contextLength не больше {last_ok}, либо просите поднять")
+        print("  OLLAMA_CONTEXT_LENGTH на сервере.")
+
+
 # --------------------------------------------------------------------------
 # Векторная база
 # --------------------------------------------------------------------------
@@ -543,6 +619,11 @@ def main() -> int:
     ap.add_argument("--verbose", action="store_true", help="показывать подробности")
     ap.add_argument("--insecure", action="store_true", help="не проверять TLS")
     ap.add_argument("--skip-model", action="store_true", help="не трогать модель (долго)")
+    ap.add_argument(
+        "--probe-context",
+        action="store_true",
+        help="измерить реальное окно контекста и выйти (несколько минут)",
+    )
     args = ap.parse_args()
 
     verify = not args.insecure
@@ -550,6 +631,11 @@ def main() -> int:
 
     print("Самопроверка стека. Проверки идут по порядку; если что-то повиснет,")
     print("последняя напечатанная строка покажет, на чём именно.")
+
+    if args.probe_context:
+        probe_context(rep, verify, [1000, 2000, 4000, 8000, 16000, 32000])
+        print(f"\nИтог: успешно {rep.passed}, провалено {rep.failed}")
+        return 0
 
     if args.skip_model:
         rep.section("Модель")
