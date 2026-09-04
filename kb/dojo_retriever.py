@@ -18,7 +18,7 @@ from qdrant_client import models
 
 from kb import config, dojo
 from kb.embedder import embed_batch
-from kb.retriever import client
+from kb.retriever import client, qdrant_alive
 
 log = logging.getLogger(__name__)
 
@@ -248,6 +248,12 @@ def search(
 ) -> dict:
     """Находки продукта: сводка по уровням плюс сами находки."""
     if not available():
+        if not qdrant_alive():
+            raise DojoSearchError(
+                f"База поиска ({config.QDRANT_URL}) не отвечает — не работает "
+                "ничего, не только находки. Проверьте, что контейнер qdrant "
+                "поднят: docker compose ps"
+            )
         raise DojoSearchError(
             "Находки DefectDojo не проиндексированы. Выгрузка и индексация: "
             "docker compose exec kb python -m kb.dojo_index"

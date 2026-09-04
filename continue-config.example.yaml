@@ -41,9 +41,8 @@ models:
         x-api-key: ТОКЕН
 
 mcpServers:
-  # Всё, что знает компания: kb_search (документация), code_search (код),
-  # jira_search (задачи) и dojo_findings (уязвимости из DefectDojo).
-  # Последние два срабатывают только на слова «jira» и «dojo» в сообщении
+  # Документация, код и задачи: kb_search + code_search + jira_search.
+  # jira_search срабатывает только на слово «jira» в сообщении
   - name: knowledge-base
     type: streamable-http
     url: http://АДРЕС-СЕРВЕРА:8010/mcp
@@ -53,6 +52,14 @@ mcpServers:
   - name: code-graph
     type: streamable-http
     url: http://АДРЕС-СЕРВЕРА:8011/mcp
+
+  # Уязвимости из DefectDojo, срабатывает на слово «dojo».
+  # Отдельный сервер намеренно: порт — единственный способ разграничить
+  # доступ, пока нет аутентификации. Если этому пользователю уязвимости
+  # не положены, просто удалите этот блок — остальное продолжит работать
+  - name: defectdojo
+    type: streamable-http
+    url: http://АДРЕС-СЕРВЕРА:8012/mcp
 
 # Правила склеиваются в системный промпт для Agent, Chat и Edit.
 # Копия из continue-rules.yaml — при правке менять в обоих местах.

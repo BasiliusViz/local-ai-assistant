@@ -85,8 +85,10 @@ services:
       - JIRA_JQL=${JIRA_JQL:-}
       - JIRA_COMMENTS=${JIRA_COMMENTS:-1}
       - JIRA_OUT=/docs/jira
-      # DefectDojo: проверка связи — python -m kb.dojo --check,
-      # выгрузка и индексация — python -m kb.dojo_index
+      # DefectDojo индексируется отсюда же (образ общий), а отвечает на
+      # вопросы отдельный сервер dojo — см. ниже:
+      #   docker compose exec kb python -m kb.dojo --check
+      #   docker compose exec kb python -m kb.dojo_index
       - DOJO_URL=${DOJO_URL:-}
       - DOJO_TOKEN=${DOJO_TOKEN:-}
       - DOJO_PRODUCTS=${DOJO_PRODUCTS:-}
@@ -101,6 +103,46 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       # Только Qdrant: Ollama обычно внешняя, и ждать её контейнер бессмысленно
+      - qdrant
+
+  # Уязвимости DefectDojo: MCP на :8012. Образ тот же, что у kb, отличается
+  # только командой запуска — пересобирать отдельно нечего.
+  #
+  # Отдельный сервер нужен ради ДОСТУПА, а не удобства: аутентификации внутри
+  # нет, и порт — единственный рычаг разграничения. :8010 открывается всей
+  # команде, :8012 со списком уязвимостей — только AppSec и сборочному агенту,
+  # правилом на брандмауэре. Данные берутся из общего индекса в Qdrant,
+  # наполняет его kb (python -m kb.dojo_index).
+  dojo:
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+    container_name: dojo
+    restart: unless-stopped
+    command: ["python", "-m", "kb.dojo_server"]
+    ports:
+      - "${DOJO_MCP_PORT:-8012}:8012"
+    environment:
+      # Поиск идёт по общей коллекции, поэтому нужны те же Qdrant и эмбеддер
+      - KB_QDRANT_URL=http://qdrant:6333
+      - KB_EMBED_MODEL=${EMBED_MODEL:-bge-m3}
+      - KB_MIN_SCORE=${KB_MIN_SCORE:-0.48}
+      - KB_OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434/v1}
+      - KB_OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
+      - KB_OLLAMA_AUTH_HEADER=${OLLAMA_AUTH_HEADER:-Authorization}
+      - KB_OLLAMA_AUTH_PREFIX=${OLLAMA_AUTH_PREFIX-Bearer }
+      - KB_OLLAMA_API=${OLLAMA_API:-openai}
+      # Адрес нужен и здесь: из него собираются ссылки на находки в ответах
+      - DOJO_URL=${DOJO_URL:-}
+      - DOJO_TOKEN=${DOJO_TOKEN:-}
+      - DOJO_PRODUCTS=${DOJO_PRODUCTS:-}
+      - DOJO_VERIFY_TLS=${DOJO_VERIFY_TLS:-1}
+      - DOJO_TIMEOUT=${DOJO_TIMEOUT:-90}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
       - qdrant
 
   # Граф кода: git -> Graphify -> MCP на :8011.

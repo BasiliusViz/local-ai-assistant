@@ -203,6 +203,22 @@ def _rerank_hits(query: str, points, top_k: int) -> "SearchResult":
     return SearchResult(hits=hits, dropped=len(points) - len(hits))
 
 
+def qdrant_alive() -> bool:
+    """Отвечает ли вообще Qdrant.
+
+    Нужно, чтобы отличать «данные не проиндексированы» от «база недоступна».
+    Проверки наличия данных гасят исключения и в обоих случаях возвращают
+    «нет», а это разные проблемы: в первой надо запустить индексацию, во
+    второй — поднять контейнер. Неверная подсказка тут дороже её отсутствия.
+    """
+    try:
+        client().get_collections()
+        return True
+    except Exception as e:
+        log.debug("Qdrant не отвечает: %s", e)
+        return False
+
+
 def collection_ready() -> bool:
     """Есть ли коллекция. На свежем развёртывании её ещё нет."""
     try:
