@@ -39,8 +39,14 @@ URL = os.getenv("DOJO_URL", "").strip().rstrip("/")
 TOKEN = os.getenv("DOJO_TOKEN", "").strip()
 PRODUCTS = [p.strip() for p in os.getenv("DOJO_PRODUCTS", "").split(",") if p.strip()]
 VERIFY_TLS = os.getenv("DOJO_VERIFY_TLS", "1").strip() != "0"
-TIMEOUT = 30.0
+# Секунд на запрос. По умолчанию щедро: /products/ у DefectDojo тяжёлый —
+# на каждую строку он подтягивает связанные объекты, и на большой инсталляции
+# страница отдаётся десятками секунд
+TIMEOUT = float(os.getenv("DOJO_TIMEOUT", "90"))
 PAGE_SIZE = 100
+# Продукты просим мелкими страницами по той же причине: один запрос на 500
+# записей укладывается в таймаут далеко не везде
+PRODUCT_PAGE = 25
 
 # Порядок важен: в таком виде выдаём сводку и в таком же считаем «сначала
 # худшее». Значения — как их пишет сам DefectDojo
@@ -95,6 +101,19 @@ def _get(client: httpx.Client, path: str, **params) -> dict:
             f"Не удалось соединиться с DefectDojo ({URL}): {e}. "
             "Проверьте адрес и доступность с этой машины."
         ) from e
+    except httpx.TimeoutException as e:
+        raise DojoError(
+            f"Таймаут {TIMEOUT:.0f} с на запросе {path}.\n"
+            "  - список продуктов в DefectDojo тяжёлый сам по себе: он "
+            "подтягивает связанные объекты на каждую строку\n"
+            "  - если инсталляция большая, поднимите DOJO_TIMEOUT в .env "
+            "(секунды) и пересоздайте контейнер\n"
+            "  - заполненный DOJO_PRODUCTS ускоряет всё заметно: продукты "
+            "запрашиваются поимённо, а не списком целиком\n"
+            "  - проверьте вручную, сколько это занимает:\n"
+            f'    curl -s -o /dev/null -w "%{{time_total}}\\n" -H '
+            f'"Authorization: Token <ключ>" "{URL}/api/v2/products/?limit=25"'
+        ) from e
     except httpx.HTTPError as e:
         raise DojoError(f"Запрос к DefectDojo не удался: {e}") from e
 
@@ -136,15 +155,49 @@ def normalize_severity(value: str) -> str:
     )
 
 
+def _all_products(client: httpx.Client) -> list[dict]:
+    """Весь список продуктов, мелкими страницами.
+
+    Одним запросом на 500 записей это укладывалось в таймаут не везде:
+    /products/ у DefectDojo подтягивает связанные объекты на каждую строку,
+    и на большой инсталляции страница отдаётся десятками секунд.
+    """
+    out: list[dict] = []
+    offset = 0
+    while True:
+        data = _get(client, "/products/", limit=PRODUCT_PAGE, offset=offset)
+        results = data.get("results", [])
+        out.extend(results)
+        offset += len(results)
+        if not results or offset >= int(data.get("count", 0)):
+            return out
+
+
 def products(client: httpx.Client) -> list[dict]:
     """Продукты, которые нам разрешено показывать.
 
-    Список фильтруем на своей стороне, а не запросом: у разных версий
-    DefectDojo фильтр по имени ведёт себя по-разному (точное совпадение против
-    вхождения), а продуктов в любом случае немного.
+    Когда DOJO_PRODUCTS задан, спрашиваем их ПОИМЁННО — это несколько крошечных
+    запросов вместо обхода всего каталога, и на инсталляции с сотнями продуктов
+    разница между «секунда» и «таймаут».
+
+    Если фильтр по имени в этой сборке DefectDojo не сработал (у разных версий
+    он ведёт себя по-разному: точное совпадение против вхождения), откатываемся
+    на полный обход и отбираем на своей стороне.
     """
-    data = _get(client, "/products/", limit=500)
-    found = data.get("results", [])
+    if PRODUCTS:
+        picked: dict[int, dict] = {}
+        for name in PRODUCTS:
+            data = _get(client, "/products/", name=name, limit=PRODUCT_PAGE)
+            for item in data.get("results", []):
+                # Фильтр мог вернуть лишнее (вхождение вместо совпадения) —
+                # оставляем только то, что действительно просили
+                if _norm(item.get("name", "")) == _norm(name):
+                    picked[item["id"]] = item
+        if picked:
+            return list(picked.values())
+        log.debug("фильтр по имени ничего не дал, читаем каталог целиком")
+
+    found = _all_products(client)
     if not PRODUCTS:
         return found
     allowed = {_norm(p) for p in PRODUCTS}

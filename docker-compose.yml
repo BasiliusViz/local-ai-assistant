@@ -91,6 +91,7 @@ services:
       - DOJO_TOKEN=${DOJO_TOKEN:-}
       - DOJO_PRODUCTS=${DOJO_PRODUCTS:-}
       - DOJO_VERIFY_TLS=${DOJO_VERIFY_TLS:-1}
+      - DOJO_TIMEOUT=${DOJO_TIMEOUT:-90}
     # host.docker.internal (модель на этой же машине) сам по себе есть только
     # в Docker Desktop. На Linux с обычным Docker Engine имя не резолвится, и
     # kb молча теряет доступ к модели — при том что deploy.sh и healthcheck.sh
