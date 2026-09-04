@@ -314,12 +314,13 @@ ADVICE_PROMPT = """Ты инженер по безопасности прило�
 Рекомендация сканера: {mitigation}
 
 Требования к ответу:
+- ПИШИ ТОЛЬКО ПО-РУССКИ, целиком, включая термины;
 - три-пять предложений, по делу, без вступлений;
 - начни с самого действия, а не с пересказа проблемы;
 - если данных не хватает на конкретику, так и скажи и назови, что уточнить;
 - ничего не выдумывай про наш код: ты видишь только то, что выше.
 
-Ответ:"""
+Ответ по-русски:"""
 
 
 def chat_endpoint(base: str | None) -> str:
@@ -336,6 +337,30 @@ def chat_endpoint(base: str | None) -> str:
     if base.endswith("/v1"):
         base = base[:-3].rstrip("/")
     return f"{base}/api/chat" if config.OLLAMA_API == "native" else f"{base}/v1/chat/completions"
+
+
+
+def looks_foreign(text: str) -> bool:
+    """Ответ съехал на иероглифы?
+
+    qwen — модель китайского происхождения, и на коротких промптах она
+    периодически отвечает по-китайски, даже когда весь разговор русский.
+    В документ такое пускать нельзя, поэтому проверяем результат, а не
+    надеемся на инструкцию.
+
+    Условия два сразу, и это важно: одиночный термин в скобках внутри русской
+    фразы — не повод выбрасывать разумный ответ целиком, а вот десятки знаков
+    означают, что модель ушла на другой язык.
+    """
+    if not text:
+        return False
+    cjk = sum(
+        1
+        for ch in text
+        if "一" <= ch <= "鿿"  # китайские иероглифы
+        or "぀" <= ch <= "ヿ"  # японские каны, попадаются рядом
+    )
+    return cjk >= 8 and cjk > len(text) * 0.02
 
 
 def advise(hits: list, limit: int, ollama: str | None = None) -> dict:
@@ -400,6 +425,38 @@ def advise(hits: list, limit: int, ollama: str | None = None) -> dict:
         # ему не место
         if "</think>" in text:
             text = text.split("</think>", 1)[1].strip()
+
+        if looks_foreign(text):
+            # Одна повторная попытка с явным напоминанием. Если и она съехала,
+            # лучше оставить находку без предложения, чем положить в документ
+            # для руководства абзац на китайском
+            print(f"  [!] находка {hit.finding_id}: ответ не на русском, повторяю")
+            try:
+                body["messages"] = [
+                    {"role": "user", "content": prompt},
+                    {
+                        "role": "system",
+                        "content": "Отвечай исключительно на русском языке.",
+                    },
+                ]
+                resp = requests.post(url, json=body, headers=headers, timeout=180)
+                resp.raise_for_status()
+                data = resp.json()
+                text = (
+                    data.get("message", {}).get("content", "")
+                    if native
+                    else data["choices"][0]["message"]["content"]
+                ).strip()
+                if "</think>" in text:
+                    text = text.split("</think>", 1)[1].strip()
+            except Exception as e:
+                log.debug("повтор для %s не удался: %s", hit.finding_id, e)
+                text = ""
+
+            if looks_foreign(text):
+                print(f"  [!] находка {hit.finding_id}: пропускаю предложение")
+                continue
+
         if text:
             out[hit.finding_id] = text
             print(f"  предложение готово: находка {hit.finding_id}")
