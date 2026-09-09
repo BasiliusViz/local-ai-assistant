@@ -54,7 +54,7 @@ docker compose run --rm oasis --list-models -ol http://host.docker.internal:1143
 Прогон по одному каталогу:
 
 ```powershell
-docker compose run --rm -v D:\КАТАЛОГ-НАД-ПРОЕКТОМ:/code oasis -i /code/ИМЯ-ПРОЕКТА -x py -sm qwen3.6:35b -m qwen3.6:35b -em bge-m3 -ol http://host.docker.internal:11435
+docker compose run --rm -e OASIS_EMBEDDING_DETECTED_CHUNK_SIZE_MAX=1024 -v D:\КАТАЛОГ-НАД-ПРОЕКТОМ:/code oasis -i /code/ИМЯ-ПРОЕКТА -x py -sm qwen3.6:35b -m qwen3.6:35b -em bge-m3 -ol http://host.docker.internal:11435
 ```
 
 ---
@@ -86,6 +86,21 @@ OASIS кладёт кеш (`.oasis_cache/`) и отчёты (`security_reports/`
 копировать репозиторий во временный каталог, а анализировать уже копию.
 
 Отчёты после прогона ищите в `security_reports/` внутри той же папки.
+
+## Ошибка «input length exceeds the context length»
+
+Так падает подсчёт эмбеддингов. OASIS спрашивает у Ollama окно модели, видит
+у `bge-m3` заявленные 8192 и режет куски примерно по 7400 токенов — а шлюз
+отдаёт модель с окном поменьше, и приходит 500.
+
+Сервер не наш, его `num_ctx` не поменять, поэтому ограничиваем со стороны
+клиента переменной `OASIS_EMBEDDING_DETECTED_CHUNK_SIZE_MAX` (она в их
+`oasis/config.py`, ограничивает автоопределённый размер сверху). Начинать с
+1024, при повторе — 512.
+
+По словам автора инструмента в issue #58, ошибка не блокирующая: прогон
+продолжается, просто длинные файлы остаются без эмбеддингов. То есть отчёт
+будет, но неполный.
 
 ## Осторожно с ключами
 
