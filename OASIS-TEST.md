@@ -54,10 +54,25 @@ docker compose run --rm oasis --list-models -ol http://host.docker.internal:1143
 Прогон по одному каталогу:
 
 ```powershell
-docker compose run --rm -v D:\ПУТЬ-К-ПРОЕКТУ:/code oasis -i /code -x py -sm qwen3.6:35b -m qwen3.6:35b -em bge-m3 -ol http://host.docker.internal:11435
+docker compose run --rm -v D:\КАТАЛОГ-НАД-ПРОЕКТОМ:/code oasis -i /code/ИМЯ-ПРОЕКТА -x py -sm qwen3.6:35b -m qwen3.6:35b -em bge-m3 -ol http://host.docker.internal:11435
 ```
 
 ---
+
+## Почему монтируется каталог НАД проектом
+
+Это главная засада, на которой теряется больше всего времени. OASIS кладёт
+кеш и отчёты **в родительский каталог анализируемого пути** — так написано в
+`oasis/helpers/analysis_root_path.py`: reports идут в «the scan input's
+parent's `security_reports` folder», а `.oasis_cache` — рядом с проектом.
+
+Смонтируете проект как `/code` и укажете `-i /code` — родителем окажется
+корень контейнера, и прогон упадёт с `permission denied` на `/.oasis_cache`.
+Поэтому монтируем уровень выше, а анализируем подкаталог: тогда родитель
+это `/code`, куда писать можно.
+
+Результаты после этого окажутся в `КАТАЛОГ-НАД-ПРОЕКТОМ\security_reports\`
+у вас на машине.
 
 ## Почему код монтируется БЕЗ `:ro`
 
@@ -87,8 +102,8 @@ docker compose run --rm oasis --help
 
 ## Что подставить своё
 
-- `D:\code-data` — ваш каталог с кодом (`CODE_DIR` из `.env`)
-- `ВАШ-ПРОЕКТ/app` — путь к каталогу внутри него, начиная с `/code`
+- `D:\КАТАЛОГ-НАД-ПРОЕКТОМ` — папка, ВНУТРИ которой лежит проект
+- `ИМЯ-ПРОЕКТА` — сама папка проекта; путь в `-i` начинается с `/code/`
 - `qwen3.6:35b` — имя модели из вывода `--list-models`
 
 ## Почему команды именно такие
