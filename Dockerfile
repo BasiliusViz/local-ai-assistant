@@ -26,6 +26,10 @@ COPY kb/ ./kb/
 # запускается через docker compose exec kb
 COPY confluence/ ./confluence/
 COPY jira/ ./jira/
+# Самопроверка тоже должна быть внутри: в документации она вызывается как
+# docker compose exec kb python selftest.py, а без этой строки файла в образе
+# нет и команда падает с "No such file or directory"
+COPY selftest.py ./
 
 # Внутри контейнера localhost - это сам контейнер, а не хост.
 # Соседние сервисы доступны по именам из compose.
