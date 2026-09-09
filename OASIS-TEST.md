@@ -54,10 +54,23 @@ docker compose run --rm oasis --list-models -ol http://host.docker.internal:1143
 Прогон по одному каталогу:
 
 ```powershell
-docker compose run --rm -v D:\code-data:/code:ro oasis -i /code/ВАШ-ПРОЕКТ/app -sm qwen3.6:35b -m qwen3.6:35b -em bge-m3 -ol http://host.docker.internal:11435 -v
+docker compose run --rm -v D:\code-data:/code:ro oasis -i /code/ВАШ-ПРОЕКТ/app -sm qwen3.6:35b -m qwen3.6:35b -em bge-m3 -ol http://host.docker.internal:11435
 ```
 
 ---
+
+## Осторожно с ключами
+
+`-v` в OASIS означает `--vulns` (типы уязвимостей), а НЕ подробный вывод. В
+команде выше `-v` встречается только один раз и только в docker — это ключ
+монтирования, он обязателен. Дописывать `-v` в конец, как флаг подробности,
+нельзя: получите `error: argument -v/--vulns`.
+
+Какие ключи есть на самом деле:
+
+```powershell
+docker compose run --rm oasis --help
+```
 
 ## Что подставить своё
 
