@@ -54,10 +54,22 @@ docker compose run --rm oasis --list-models -ol http://host.docker.internal:1143
 Прогон по одному каталогу:
 
 ```powershell
-docker compose run --rm -v D:\code-data:/code:ro oasis -i /code/ВАШ-ПРОЕКТ/app -sm qwen3.6:35b -m qwen3.6:35b -em bge-m3 -ol http://host.docker.internal:11435
+docker compose run --rm -e HOME=/home/appuser -v D:\oasis-cache:/home/appuser/.oasis_cache -v D:\ПУТЬ-К-ПРОЕКТУ:/code:ro oasis -i /code -x py -sm qwen3.6:35b -m qwen3.6:35b -em bge-m3 -ol http://host.docker.internal:11435
 ```
 
 ---
+
+## Почему `-e HOME=/home/appuser`
+
+В их `Dockerfile` контейнер работает под пользователем `appuser`, но переменная
+`HOME` не выставлена. Docker подставляет корень, кеш пытается создаться в
+`/.oasis_cache`, и прогон падает с `permission denied`. Ключ задаёт домашний
+каталог, который в образе есть и этому пользователю принадлежит.
+
+Второе монтирование, `-v D:\oasis-cache:/home/appuser/.oasis_cache`, выносит
+кеш наружу. OASIS кеширует эмбеддинги и результаты анализа, а с `--rm`
+контейнер удаляется вместе с ними — без этого каждый прогон считал бы всё
+заново.
 
 ## Осторожно с ключами
 
