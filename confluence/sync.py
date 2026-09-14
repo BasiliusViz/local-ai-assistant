@@ -230,6 +230,11 @@ def main() -> int:
     ap.add_argument("--full", action="store_true", help="выгрузить всё, игнорируя даты")
     ap.add_argument("--dump-raw", metavar="FILE", help="сохранить сырой ответ API")
     ap.add_argument("--limit", type=int, help="ограничить число страниц (для пробы)")
+    ap.add_argument(
+        "--force-prune",
+        action="store_true",
+        help="удалить пропавшие страницы, даже если их подозрительно много",
+    )
     args = ap.parse_args()
 
     url = os.getenv("CONFLUENCE_URL", "").strip()
@@ -276,7 +281,7 @@ def main() -> int:
     state_path = state_file(out_dir)
     state = {} if args.full else load_state(state_path)
     new_state = dict(state)
-    stats = {"новых": 0, "обновлено": 0, "без изменений": 0, "ошибок": 0}
+    stats = {"новых": 0, "обновлено": 0, "без изменений": 0, "удалено": 0, "ошибок": 0}
     processed = 0
 
     def source_pages():
@@ -338,6 +343,43 @@ def main() -> int:
             "space": space,
             "file": str(target),
         }
+
+    # Страницы, которые были в прошлый раз, а теперь в дереве не нашлись, —
+    # их удалили или перенесли за пределы выгружаемых разделов. Файл убираем:
+    # индексатор увидит, что он пропал, и вычистит его чанки из поиска. Без
+    # этого удалённая в Confluence страница оставалась бы в ответах ассистента
+    # навсегда.
+    #
+    # Только после полного обхода: при --limit дерево пройдено не целиком, и
+    # всё непройденное выглядело бы удалённым. Прервётся обход на ошибке —
+    # до этого места выполнение не дойдёт вовсе
+    if not args.limit:
+        known = [pid for pid in state if not pid.startswith("_")]
+        vanished = [pid for pid in known if pid not in seen_ids]
+
+        # Защита от смены прав. Если у токена отобрали доступ к разделу, его
+        # страницы разом пропадут из выдачи — и это не удаление, а повод
+        # разобраться. Молча стереть половину базы знаний из-за одной
+        # настройки прав хуже, чем оставить устаревшие страницы на час
+        suspicious = known and len(vanished) > max(10, len(known) // 2)
+        if suspicious and not args.force_prune:
+            print(
+                f"\n[!] Из дерева пропало {len(vanished)} страниц из {len(known)} — "
+                "это похоже на смену прав токена, а не на удаление.\n"
+                "    Файлы не трогаю. Проверьте доступ к разделам; если страницы "
+                "действительно удалены, запустите с --force-prune"
+            )
+        else:
+            for pid in vanished:
+                info = state.get(pid) or {}
+                path = Path(info.get("file", ""))
+                stats["удалено"] += 1
+                if args.dry_run:
+                    print(f"  [удалено   ] {info.get('title', pid)}")
+                    continue
+                if path.is_file():
+                    path.unlink()
+                new_state.pop(pid, None)
 
     print("\nИтог:")
     for key, value in stats.items():

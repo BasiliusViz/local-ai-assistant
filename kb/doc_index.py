@@ -23,6 +23,7 @@
 
 import argparse
 import hashlib
+import json
 import logging
 import os
 import re
@@ -132,6 +133,66 @@ def point_id(source: str, rel: str, idx: int) -> str:
     return str(uuid.UUID(hashlib.md5(seed.encode()).hexdigest()))
 
 
+# Версия нарезки. Входит в файл состояния: если поменять split_text, хеши
+# файлов останутся прежними, и индексатор решил бы, что пересчитывать нечего,
+# хотя чанки в базе нарезаны по-старому. Меняется вручную вместе с логикой
+# нарезки — тогда первый же прогон переиндексирует всё
+CHUNKER_VERSION = 1
+
+
+def load_state(path: Path) -> dict[str, str]:
+    """Хеши файлов с прошлого прогона. Нет файла или другая нарезка — пусто."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if data.get("chunker_version") != CHUNKER_VERSION:
+        print("Нарезка документов поменялась с прошлого прогона — пересчитываю всё")
+        return {}
+    return data.get("files", {})
+
+
+def save_state(path: Path, files: dict[str, str]) -> None:
+    """Записать состояние через временный файл.
+
+    Если прогон оборвётся посреди записи, повреждённый JSON при следующем
+    запуске прочитается как пустой — и индексатор пересчитает всё заново.
+    Это безопасно, но дорого; атомарная замена такого не допускает.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(
+            {"chunker_version": CHUNKER_VERSION, "files": files},
+            ensure_ascii=False,
+            indent=1,
+        ),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def delete_file_points(client: QdrantClient, collection: str, source: str, rel: str) -> None:
+    """Убрать из базы все чанки одного файла."""
+    client.delete(
+        collection_name=collection,
+        points_selector=models.FilterSelector(
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="source", match=models.MatchValue(value=source)
+                    ),
+                    models.FieldCondition(
+                        key="source_id", match=models.MatchValue(value=rel)
+                    ),
+                ]
+            )
+        ),
+        wait=True,
+    )
+
+
 def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
     # httpx рапортует о каждом запросе; при индексации это сотни строк,
@@ -143,6 +204,11 @@ def main() -> int:
     ap.add_argument("--source", default="local", help="метка источника")
     ap.add_argument("--collection", default=config.COLLECTION)
     ap.add_argument("--batch", type=int, default=16)
+    ap.add_argument(
+        "--full",
+        action="store_true",
+        help="переиндексировать всё, не глядя на то, что уже посчитано",
+    )
     args = ap.parse_args()
 
     root = Path(args.root)
@@ -161,15 +227,44 @@ def main() -> int:
                 files.append(Path(dirpath) / name)
     files.sort()
 
-    print(f"Файлов: {len(files)}")
+    state_path = root / f".index_state.{args.source}.json"
+    previous = {} if args.full else load_state(state_path)
+    current: dict[str, str] = {}
+
+    print(f"Файлов: {len(files)}" + ("" if args.full else f", уже посчитано: {len(previous)}"))
     total = 0
+    skipped = 0
 
     for number, path in enumerate(files, 1):
+        rel = str(path.relative_to(root)).replace("\\", "/")
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            raw = path.read_bytes()
         except OSError as e:
             print(f"  [!] {path}: {e}")
+            # Прочитать не вышло — оставляем как было, чтобы следующий прогон
+            # попробовал снова, а не решил, что файл удалён
+            if rel in previous:
+                current[rel] = previous[rel]
             continue
+
+        digest = hashlib.sha256(raw).hexdigest()
+        current[rel] = digest
+
+        # Файл не менялся с прошлого прогона — векторы в базе актуальны.
+        # Ради этого всё и затевалось: при запуске по расписанию раз в час
+        # правят три страницы из сотен, и пересчитывать остальные — значит
+        # каждый час гонять эмбеддер вхолостую и отбирать видеокарту у чата
+        if previous.get(rel) == digest:
+            skipped += 1
+            continue
+
+        text = raw.decode("utf-8", errors="replace")
+
+        # Старые точки этого файла долой: документ мог стать короче. Делаем это
+        # до проверки на пустоту — если страницу очистили, её старый текст не
+        # должен остаться в поиске
+        delete_file_points(client, args.collection, args.source, rel)
+
         if not text.strip():
             continue
 
@@ -177,26 +272,7 @@ def main() -> int:
         if not chunks:
             continue
 
-        rel = str(path.relative_to(root)).replace("\\", "/")
         print(f"[{number}/{len(files)}] {rel} - чанков: {len(chunks)}")
-
-        # Старые точки этого файла долой: документ мог стать короче
-        client.delete(
-            collection_name=args.collection,
-            points_selector=models.FilterSelector(
-                filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="source", match=models.MatchValue(value=args.source)
-                        ),
-                        models.FieldCondition(
-                            key="source_id", match=models.MatchValue(value=rel)
-                        ),
-                    ]
-                )
-            ),
-            wait=True,
-        )
 
         stat = path.stat()
         updated = f"{__import__('datetime').datetime.utcfromtimestamp(stat.st_mtime).isoformat()}Z"
@@ -235,8 +311,21 @@ def main() -> int:
             )
             total += len(batch)
 
+    # Файлы, которые были в прошлый раз, а теперь пропали с диска. Их чанки
+    # иначе висели бы в поиске вечно, и ассистент продолжал бы цитировать
+    # страницу, которой больше нет
+    gone = sorted(set(previous) - set(current))
+    for rel in gone:
+        delete_file_points(client, args.collection, args.source, rel)
+        print(f"  удалён из индекса: {rel}")
+
+    save_state(state_path, current)
+
     info = client.get_collection(args.collection)
     print(f"\nЗаписано чанков: {total}")
+    print(f"Без изменений, пропущено файлов: {skipped}")
+    if gone:
+        print(f"Пропало с диска и убрано из индекса: {len(gone)}")
     print(f"Всего в коллекции {args.collection}: {info.points_count}")
     return 0
 
