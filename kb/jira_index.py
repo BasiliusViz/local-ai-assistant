@@ -21,6 +21,7 @@
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import re
@@ -31,13 +32,19 @@ from pathlib import Path
 from qdrant_client import QdrantClient, models
 
 from kb import config
-from kb.doc_index import ensure_collection, point_id
+from kb.doc_index import ensure_collection, load_state, point_id, save_state
 from kb.embedder import embed_batch
 
 log = logging.getLogger(__name__)
 
 SOURCE = "jira"
 MAX_CHUNK_CHARS = 1500
+
+# Версия нарезки задач (issue_chunks). Хранится в файле состояния: если
+# поменять, как задача режется на чанки, хеши JSON-файлов останутся прежними,
+# и без этой отметки индексатор решил бы, что пересчитывать нечего. Меняется
+# вручную вместе с логикой нарезки
+JIRA_CHUNKER_VERSION = 1
 
 # Поля задачи, по которым фильтруем. Без индекса Qdrant тоже отфильтрует, но
 # полным перебором коллекции — на десятках тысяч чанков это заметно
@@ -162,6 +169,11 @@ def main() -> int:
     ap.add_argument("root", help="каталог с выгрузкой (jira/sync.py)")
     ap.add_argument("--collection", default=config.COLLECTION)
     ap.add_argument("--batch", type=int, default=16)
+    ap.add_argument(
+        "--full",
+        action="store_true",
+        help="переиндексировать все задачи, не глядя на то, что уже посчитано",
+    )
     args = ap.parse_args()
 
     root = Path(args.root)
@@ -171,7 +183,14 @@ def main() -> int:
         return 1
 
     files = sorted(p for p in root.rglob("*.json") if not p.name.startswith("."))
-    if not files:
+
+    state_path = root / f".index_state.{SOURCE}.json"
+    previous = {} if args.full else load_state(state_path, JIRA_CHUNKER_VERSION)
+
+    # Пустой каталог без истории — значит ещё ничего не выгружали. А пустой
+    # каталог С историей — законный случай: сверка убрала все задачи как
+    # вышедшие из охвата, и их чанки тоже надо вычистить. Выходить рано нельзя
+    if not files and not previous:
         print(f"В {root} нет выгруженных задач.")
         print("Сначала выгрузите их: python jira/sync.py")
         return 1
@@ -180,17 +199,51 @@ def main() -> int:
     ensure_collection(client, args.collection)
     ensure_jira_indexes(client, args.collection)
 
-    print(f"Задач: {len(files)}")
+    print(f"Задач: {len(files)}" + ("" if args.full else f", уже посчитано: {len(previous)}"))
     total = 0
+    skipped = 0
+    current: dict[str, str] = {}
 
     for number, path in enumerate(files, 1):
+        # Состояние ведётся по номеру задачи из имени файла: sync.py пишет
+        # <ПРОЕКТ>/<НОМЕР>.json. Так пропавший файл однозначно указывает, чьи
+        # чанки вычищать, даже когда прочитать его содержимое уже нельзя
+        stem = path.stem
         try:
-            issue = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
+            raw = path.read_bytes()
+        except OSError as e:
             print(f"  [!] {path.name}: {e}")
+            # Не прочиталось — оставляем как было, чтобы следующий прогон
+            # попробовал снова, а не счёл задачу удалённой
+            if stem in previous:
+                current[stem] = previous[stem]
             continue
 
-        key = issue.get("key") or path.stem
+        digest = hashlib.sha256(raw).hexdigest()
+
+        # Задача не менялась с прошлого прогона — векторы актуальны. При
+        # запуске по расписанию это почти все задачи: выгрузка берёт
+        # изменившееся с запасом по времени, и часть файлов перезаписывается
+        # тем же самым содержимым
+        if previous.get(stem) == digest:
+            current[stem] = digest
+            skipped += 1
+            continue
+
+        try:
+            issue = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            print(f"  [!] {path.name}: {e}")
+            # Битый файл не запоминаем как посчитанный: иначе он навсегда
+            # остался бы непроиндексированным. Старые чанки, если были, пусть
+            # живут до следующей удачной выгрузки
+            if stem in previous:
+                current[stem] = previous[stem]
+            continue
+
+        current[stem] = digest
+
+        key = issue.get("key") or stem
         chunks = issue_chunks(issue)
         if not chunks:
             continue
@@ -271,8 +324,38 @@ def main() -> int:
             )
             total += len(batch)
 
+    # Задачи, файлы которых пропали с диска: их убрала сверка (sync.py
+    # --prune) как вышедшие из охвата — удалённые, перенесённые в чужой
+    # проект, переназначенные вне команды или выпавшие из окна JIRA_SINCE.
+    # Без этого они висели бы в поиске вечно, со статусом на момент последней
+    # выгрузки
+    gone = sorted(set(previous) - set(current))
+    for key in gone:
+        client.delete(
+            collection_name=args.collection,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="source", match=models.MatchValue(value=SOURCE)
+                        ),
+                        models.FieldCondition(
+                            key="source_id", match=models.MatchValue(value=key)
+                        ),
+                    ]
+                )
+            ),
+            wait=True,
+        )
+        print(f"  удалена из индекса: {key}")
+
+    save_state(state_path, current, JIRA_CHUNKER_VERSION)
+
     info = client.get_collection(args.collection)
     print(f"\nЗаписано чанков: {total}")
+    print(f"Без изменений, пропущено задач: {skipped}")
+    if gone:
+        print(f"Вышло из охвата и убрано из индекса: {len(gone)}")
     print(f"Всего в коллекции {args.collection}: {info.points_count}")
     return 0
 

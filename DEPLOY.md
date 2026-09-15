@@ -108,10 +108,10 @@ docker compose exec kb python -m kb.doc_index /docs/internal --source local
 **Confluence** — отдельно, см. `confluence/README.md`. Скрипт выгружает
 страницы в markdown, дальше их индексирует та же команда.
 
-Обновление по расписанию — раз в час, `crontab -e`:
+Обновление по расписанию — раз в два часа, в начале чётного часа, `crontab -e`:
 
 ```
-0 * * * * /srv/local-ai/confluence/cron.sh >> /var/log/local-ai-confluence.log 2>&1
+0 */2 * * * /srv/local-ai/confluence/cron.sh >> /var/log/local-ai-confluence.log 2>&1
 ```
 
 Прогон без изменений занимает секунды: выгрузка берёт только страницы с новой
@@ -146,12 +146,24 @@ docker compose exec kb python -m kb.jira_index /docs/jira
 docker compose exec kb python jira/sync.py --since 90d
 ```
 
-По расписанию, `crontab -e` (выгрузка инкрементальная, забирает только
-изменившееся):
+По расписанию, `crontab -e` — две строки:
 
 ```
-30 * * * * cd /srv/local-ai && docker compose exec -T kb python jira/sync.py && docker compose exec -T kb python -m kb.jira_index /docs/jira >> /var/log/local-ai-sync.log 2>&1
+30 */2 * * * /srv/local-ai/jira/cron.sh >> /var/log/local-ai-jira.log 2>&1
+15 3 * * *   /srv/local-ai/jira/cron.sh --prune >> /var/log/local-ai-jira.log 2>&1
 ```
+
+Первая — раз в два часа, со сдвигом на полчаса от Confluence, чтобы две
+индексации не нагружали эмбеддер одновременно. Берёт только изменившиеся
+задачи, пересчитывает только те, у которых поменялось содержимое: смена
+статуса, исполнителя, новый комментарий попадают в поиск на ближайшем прогоне.
+
+Вторая — сверка раз в сутки. Обычная выгрузка не замечает, что задача пропала
+из охвата: её удалили, перенесли, переназначили вне команды или она выпала из
+окна `JIRA_SINCE`. Сверка запрашивает номера всех задач в охвате и убирает
+лишнее. Если вне охвата разом оказалось больше половины задач, она ничего не
+удаляет и предупреждает: это почти всегда смена прав или условий выборки, а не
+удаление. Принудительно — `jira/sync.py --prune --force-prune`.
 
 ## Если поиск работает медленно
 

@@ -280,6 +280,32 @@ class Client:
         """Сколько задач под условие. maxResults=0 — Jira отдаёт только total."""
         return int(self.get("/rest/api/2/search", jql=jql, maxResults=0).get("total", 0))
 
+    def keys(self, jql: str, page_size: int = 500):
+        """Только номера задач под условие — для сверки.
+
+        Без описаний и комментариев ответ в десятки раз легче обычной выгрузки,
+        поэтому весь охват проходится быстро. Jira сама урезает размер страницы
+        до своего предела, так что шаг считаем по фактически пришедшему, а не по
+        запрошенному. Сортировка по номеру — чтобы страницы не съезжали, если
+        кто-то правит задачи прямо во время сверки.
+        """
+        start = 0
+        while True:
+            data = self.get(
+                "/rest/api/2/search",
+                jql=f"{jql} ORDER BY key ASC",
+                startAt=start,
+                maxResults=page_size,
+                fields="key",
+            )
+            issues = data.get("issues", [])
+            for issue in issues:
+                if issue.get("key"):
+                    yield issue["key"]
+            start += len(issues)
+            if not issues or start >= int(data.get("total", 0)):
+                return
+
     def search(self, jql: str, with_comments: bool, page_size: int = PAGE_SIZE):
         """Задачи под условие, постранично.
 
@@ -438,6 +464,67 @@ def load_state(path: Path) -> dict:
     return {}
 
 
+def prune(client: Client, out_dir: Path, jql: str, dry_run: bool, force: bool) -> int:
+    """Убрать с диска задачи, вышедшие из охвата.
+
+    Обычная выгрузка берёт только изменившееся с прошлого раза и потому не
+    видит, что задача пропала: её удалили, перенесли в чужой проект,
+    переназначили на человека вне команды или она выпала из окна JIRA_SINCE.
+    Сверка запрашивает номера ВСЕХ задач в охвате — лёгкий запрос, без
+    описаний — и удаляет файлы тех, кого там нет. Индексатор затем вычистит их
+    чанки из поиска.
+
+    Запускать раз в сутки: полный проход обычному прогону не нужен, а чаще
+    смысла нет — устаревшая задача провисит в поиске не дольше суток.
+    """
+    print(f"\nСверка с Jira: {jql}")
+    try:
+        in_scope = set(client.keys(jql))
+    except JiraError as e:
+        # Недочитанный список нельзя использовать для удаления: всё, что не
+        # успело прийти, выглядело бы вышедшим из охвата
+        print(f"\nСверка прервана, ничего не удалено: {e}")
+        return 1
+
+    on_disk = {
+        p.stem: p for p in out_dir.rglob("*.json") if not p.name.startswith(".")
+    }
+    vanished = sorted(set(on_disk) - in_scope)
+    print(
+        f"В охвате Jira: {len(in_scope)}, на диске: {len(on_disk)}, "
+        f"вне охвата: {len(vanished)}"
+    )
+
+    # Защита от ошибки вместо удаления. Если Jira вернула пустой список, а на
+    # диске задачи есть, или «пропало» больше половины разом, это почти всегда
+    # не удалённые задачи, а отобранные у токена права, поменявшийся JIRA_TEAM
+    # или JQL, который стал отбирать не то. Молча стереть индекс из-за этого
+    # хуже, чем подержать устаревшее ещё сутки
+    suspicious = bool(on_disk) and (
+        not in_scope or len(vanished) > max(10, len(on_disk) // 2)
+    )
+    if suspicious and not force:
+        print(
+            f"\n[!] Вне охвата оказалось {len(vanished)} задач из {len(on_disk)} — "
+            "это похоже на смену прав или условий выборки, а не на удаление.\n"
+            "    Файлы не трогаю. Проверьте JIRA_PROJECTS, JIRA_TEAM и доступ "
+            "токена; если всё верно, запустите с --force-prune"
+        )
+        return 0
+
+    for key in vanished:
+        if dry_run:
+            print(f"  [вне охвата] {key}")
+            continue
+        on_disk[key].unlink()
+        print(f"  удалена: {key}")
+
+    if vanished and not dry_run:
+        print("\nДальше проиндексировать — индексатор вычистит их из поиска:")
+        print(f'    docker compose exec kb python -m kb.jira_index "{out_dir}"')
+    return 0
+
+
 def main() -> int:
     load_env()
 
@@ -452,6 +539,16 @@ def main() -> int:
         metavar="СРОК",
         help="брать изменённые не раньше: 30d, 6M или 2026-08-01. "
         "Перебивает JIRA_SINCE из .env",
+    )
+    ap.add_argument(
+        "--prune",
+        action="store_true",
+        help="сверка: убрать с диска задачи, вышедшие из охвата, и выйти",
+    )
+    ap.add_argument(
+        "--force-prune",
+        action="store_true",
+        help="при сверке удалить, даже если вне охвата подозрительно много",
     )
     args = ap.parse_args()
 
@@ -521,6 +618,15 @@ def main() -> int:
                 print(f"    {project:12} недоступен.\n{e}")
                 return 1
         return 0
+
+    if args.prune:
+        return prune(
+            client,
+            out_dir,
+            build_jql(projects, team, window, extra_jql, None),
+            dry_run=args.dry_run,
+            force=args.force_prune,
+        )
 
     state_path = out_dir / ".sync_state.json"
     state = {} if args.full else load_state(state_path)

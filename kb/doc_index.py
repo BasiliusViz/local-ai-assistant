@@ -140,21 +140,25 @@ def point_id(source: str, rel: str, idx: int) -> str:
 CHUNKER_VERSION = 1
 
 
-def load_state(path: Path) -> dict[str, str]:
-    """Хеши файлов с прошлого прогона. Нет файла или другая нарезка — пусто."""
+def load_state(path: Path, version: int = CHUNKER_VERSION) -> dict[str, str]:
+    """Хеши файлов с прошлого прогона. Нет файла или другая нарезка — пусто.
+
+    Версию передаёт тот, кто режет: у задач Jira нарезка своя, и правка
+    split_text здесь не должна заставлять их пересчитываться, как и наоборот.
+    """
     if not path.exists():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
-    if data.get("chunker_version") != CHUNKER_VERSION:
+    if data.get("chunker_version") != version:
         print("Нарезка документов поменялась с прошлого прогона — пересчитываю всё")
         return {}
     return data.get("files", {})
 
 
-def save_state(path: Path, files: dict[str, str]) -> None:
+def save_state(path: Path, files: dict[str, str], version: int = CHUNKER_VERSION) -> None:
     """Записать состояние через временный файл.
 
     Если прогон оборвётся посреди записи, повреждённый JSON при следующем
@@ -164,7 +168,7 @@ def save_state(path: Path, files: dict[str, str]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(
         json.dumps(
-            {"chunker_version": CHUNKER_VERSION, "files": files},
+            {"chunker_version": version, "files": files},
             ensure_ascii=False,
             indent=1,
         ),
