@@ -22,6 +22,15 @@ set -eu
 # Подменяется заглушкой при проверке скрипта, в работе всегда crontab
 CRONTAB="${CRONTAB:-crontab}"
 
+# На минимальных серверных установках cron нет вовсе. Сказать об этом сразу и
+# показать замену — а не упасть посреди записи с невнятным «not found»
+if ! command -v "${CRONTAB%% *}" >/dev/null 2>&1; then
+    echo "На этом сервере нет cron: команда crontab не найдена."
+    echo "Ставить ничего не нужно — то же расписание делается таймерами systemd:"
+    echo "    sudo ./install-timers.sh"
+    exit 1
+fi
+
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 MARK="# local-ai: обновление Confluence и Jira (install-cron.sh)"
 
