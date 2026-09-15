@@ -18,6 +18,12 @@
 
 set -eu
 
+# У cron урезанный PATH, и docker может не найтись — тогда прогон молча
+# ничего не делает. Дописываем обычные места прямо здесь, а не в crontab,
+# чтобы не менять окружение чужих задач в том же расписании
+PATH="/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+export PATH
+
 cd "$(dirname "$0")/.."
 
 LOCK=/tmp/local-ai-confluence.lock
