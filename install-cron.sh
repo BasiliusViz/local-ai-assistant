@@ -1,11 +1,13 @@
 #!/bin/sh
-# Поставить расписание обновления Confluence и Jira в cron.
+# Поставить расписание обновления Confluence, DefectDojo и Jira в cron.
 #
 #   ./install-cron.sh             поставить
 #   ./install-cron.sh --dry-run   показать, что получится, ничего не меняя
 #
 # Чужие задачи в crontab не трогает: убирает только свои старые строки (те, где
-# есть confluence/cron.sh или jira/cron.sh) и дописывает актуальные. Поэтому
+# есть confluence/cron.sh, dojo/cron.sh или jira/cron.sh) и дописывает
+# актуальные. Пометку MARK не переименовывать: по ней находится и убирается
+# строка, поставленная прошлой версией скрипта. Поэтому
 # запускать повторно безопасно — например, когда в репозитории поменялось
 # расписание, — дублей не будет.
 #
@@ -43,6 +45,7 @@ fi
 our_lines() {
     echo "$MARK"
     echo "0 */2 * * * $ROOT/confluence/cron.sh >> $LOG_DIR/local-ai-confluence.log 2>&1"
+    echo "15 */2 * * * $ROOT/dojo/cron.sh >> $LOG_DIR/local-ai-dojo.log 2>&1"
     echo "30 */2 * * * $ROOT/jira/cron.sh >> $LOG_DIR/local-ai-jira.log 2>&1"
     echo "15 3 * * * $ROOT/jira/cron.sh --prune >> $LOG_DIR/local-ai-jira.log 2>&1"
 }
@@ -52,7 +55,7 @@ our_lines() {
 current="$($CRONTAB -l 2>/dev/null || true)"
 
 # Всё чужое остаётся как было; наши прошлые строки и пометка — убираются
-kept="$(printf '%s\n' "$current" | grep -v -e '/confluence/cron.sh' -e '/jira/cron.sh' -e "^$MARK\$" || true)"
+kept="$(printf '%s\n' "$current" | grep -v -e '/confluence/cron.sh' -e '/jira/cron.sh' -e '/dojo/cron.sh' -e "^$MARK\$" || true)"
 
 result="$(
     if [ -n "$kept" ]; then
@@ -82,7 +85,7 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 mkdir -p "$LOG_DIR"
-chmod +x "$ROOT/confluence/cron.sh" "$ROOT/jira/cron.sh"
+chmod +x "$ROOT/confluence/cron.sh" "$ROOT/jira/cron.sh" "$ROOT/dojo/cron.sh"
 
 printf '%s\n' "$result" | $CRONTAB -
 

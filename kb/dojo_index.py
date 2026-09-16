@@ -13,28 +13,46 @@
 фильтром. Смысловой поиск нужен реже — «что у нас по инъекциям», — но раз
 описания и рекомендации в находке есть, они индексируются.
 
+Каждый прогон забирает находки по API целиком — это дёшево, — но пересчитывает
+векторы только тем, у которых что-то поменялось: статус, уровень, описание.
+Находки, пропавшие из выдачи, убираются из индекса. Поэтому запуск по
+расписанию (dojo/cron.sh) без изменений занимает время одной выгрузки, а не
+пересчёта всего.
+
 Запуск:
     docker compose exec kb python -m kb.dojo_index
-    docker compose exec kb python -m kb.dojo_index --dump /docs/dojo
-    docker compose exec kb python -m kb.dojo_index --from /docs/dojo
+    docker compose exec kb python -m kb.dojo_index --full
+    docker compose exec kb python -m kb.dojo_index --dump /docs/dojo-dump
+    docker compose exec kb python -m kb.dojo_index --from /docs/dojo-dump
 """
 
 import argparse
+import hashlib
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
 from qdrant_client import QdrantClient, models
 
 from kb import config, dojo
-from kb.doc_index import ensure_collection, point_id
+from kb.doc_index import ensure_collection, load_state, point_id, save_state
 from kb.embedder import embed_batch
 
 log = logging.getLogger(__name__)
 
 SOURCE = "dojo"
 MAX_CHUNK_CHARS = 1500
+
+# Версия нарезки (chunks) и состава записи (normalize). Хранится в файле
+# состояния: поменяли нарезку — первый же прогон пересчитает всё, хотя сами
+# находки в DefectDojo не менялись
+DOJO_CHUNKER_VERSION = 1
+
+# Файл состояния лежит в /docs — это том, он переживает пересборку контейнера.
+# Внутри контейнера каталог есть всегда; при запуске с хоста задаётся --state
+STATE_PATH = os.getenv("DOJO_STATE", "/docs/dojo/.index_state.dojo.json")
 
 DOJO_INDEXED_FIELDS = (
     "finding_id",
@@ -164,6 +182,9 @@ def load(folder: Path) -> list[dict]:
     """Ранее выгруженные находки из файлов."""
     records = []
     for path in sorted(folder.rglob("*.json")):
+        # Служебные файлы (состояние индексатора) — не находки
+        if path.name.startswith("."):
+            continue
         try:
             records.append(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError) as e:
@@ -171,94 +192,200 @@ def load(folder: Path) -> list[dict]:
     return records
 
 
-def index(records: list[dict], collection: str, batch: int) -> int:
+def digest(record: dict) -> str:
+    """Отпечаток находки: поменялось любое поле — поменялся и он.
+
+    Считаем по нормализованной записи, а не по ответу API: в ответе DefectDojo
+    есть поля, которые меняются без смысла для нас (счётчики, служебные даты),
+    и из-за них находка пересчитывалась бы на каждом прогоне.
+    """
+    raw = json.dumps(record, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _by_id(finding_id: str) -> models.FilterSelector:
+    return models.FilterSelector(
+        filter=models.Filter(
+            must=[
+                models.FieldCondition(key="source", match=models.MatchValue(value=SOURCE)),
+                models.FieldCondition(
+                    key="source_id", match=models.MatchValue(value=finding_id)
+                ),
+            ]
+        )
+    )
+
+
+def indexed_ids(client: QdrantClient, collection: str) -> set[str]:
+    """Номера находок, которые уже лежат в базе.
+
+    Нужно, когда файла состояния нет: первый прогон после перехода на
+    инкрементальную индексацию или после --full. Без этого находки, которых
+    больше нет в DefectDojo, остались бы в базе навсегда — удалять их было бы
+    не по чему.
+    """
+    ids: set[str] = set()
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=collection,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="source", match=models.MatchValue(value=SOURCE)
+                    ),
+                    models.FieldCondition(
+                        key="chunk_idx", match=models.MatchValue(value=0)
+                    ),
+                ]
+            ),
+            limit=1000,
+            offset=offset,
+            with_payload=["source_id"],
+            with_vectors=False,
+        )
+        ids.update(str((p.payload or {}).get("source_id", "")) for p in points)
+        if offset is None:
+            ids.discard("")
+            return ids
+
+
+def points_for(record: dict, pieces: list[str], vectors: list) -> list[models.PointStruct]:
+    title = f"{record['id']} · {record['title']}"
+    return [
+        models.PointStruct(
+            id=point_id(SOURCE, str(record["id"]), idx),
+            vector={config.DENSE_VECTOR: vec},
+            payload={
+                "source": SOURCE,
+                "source_id": str(record["id"]),
+                "space": record["product"],
+                "title": title,
+                "url": record["url"],
+                "acl_groups": [f"dojo:{record['product']}"],
+                "updated_at": record["updated"],
+                "chunk_idx": idx,
+                "heading": title,
+                "text": piece,
+                "finding_id": str(record["id"]),
+                "product": record["product"],
+                "severity": record["severity"],
+                "finding_status": record["status"],
+                "scanner": record["scanner"],
+                "cwe": record["cwe"],
+                "component": record["component"],
+                "location": record["location"],
+                "found_at": record["date"],
+                # Описание и рекомендация кладутся ПОЛЯМИ, а не только в текст
+                # для поиска. Без этого отчёт по продукту получался с пустой
+                # графой «как чинить»: текст рекомендации доставался лишь тогда,
+                # когда находку нашли смысловым поиском, а при отборе по
+                # фильтру — нет. Пишем только в первый чанк: дублировать в
+                # каждый незачем, а карточку retriever и так предпочитает
+                "description": record["description"] if idx == 0 else "",
+                "mitigation": record["mitigation"] if idx == 0 else "",
+                "impact": record["impact"] if idx == 0 else "",
+            },
+        )
+        for idx, (piece, vec) in enumerate(zip(pieces, vectors))
+    ]
+
+
+def index(
+    records: list[dict],
+    collection: str,
+    batch: int,
+    state_path: Path,
+    full: bool = False,
+    force_prune: bool = False,
+) -> int:
+    """Пересчитать изменившиеся находки и убрать пропавшие.
+
+    Раньше каждый прогон сносил все точки продукта и считал их заново. Для
+    ручного запуска терпимо, для расписания нет: всё время пересчёта продукт
+    в поиске пуст, упавший на середине прогон оставляет его полупустым, а
+    эмбеддер, который делит видеокарту с чатом, каждые два часа пережёвывает
+    тысячи находок, в которых ничего не поменялось.
+    """
     client = QdrantClient(url=config.QDRANT_URL, timeout=120)
     ensure_collection(client, collection)
     ensure_dojo_indexes(client, collection)
 
-    # Продукты, которые сейчас переиндексируем: старые точки по ним убираем
-    # целиком. Находка могла быть закрыта и исчезнуть из выдачи API — если её
-    # не удалить, ассистент продолжит показывать её как открытую
-    touched = sorted({r["product"] for r in records})
-    for product in touched:
-        client.delete(
-            collection_name=collection,
-            points_selector=models.FilterSelector(
-                filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="source", match=models.MatchValue(value=SOURCE)
-                        ),
-                        models.FieldCondition(
-                            key="product", match=models.MatchValue(value=product)
-                        ),
-                    ]
-                )
-            ),
-            wait=True,
-        )
+    previous = {} if full else load_state(state_path, DOJO_CHUNKER_VERSION)
+    if not previous:
+        # Истории нет — берём, что лежит в базе, с пустым отпечатком: всё
+        # пересчитается, а пропавшее из DefectDojo найдётся и удалится
+        previous = {fid: "" for fid in indexed_ids(client, collection)}
+        if previous:
+            print(f"Файла состояния нет, в базе находок: {len(previous)} — пересчитываю все")
 
+    current: dict[str, str] = {}
     total = 0
+    skipped = 0
+
     for number, record in enumerate(records, 1):
-        pieces = chunks(record)
-        title = f"{record['id']} · {record['title']}"
+        fid = str(record["id"])
+        stamp = digest(record)
+        current[fid] = stamp
 
         if number % 100 == 0 or number == len(records):
             print(f"[{number}/{len(records)}]")
 
+        # Ничего не поменялось — векторы в базе актуальны. На прогоне по
+        # расписанию это почти все находки
+        if previous.get(fid) == stamp:
+            skipped += 1
+            continue
+
+        pieces = chunks(record)
+        title = f"{record['id']} · {record['title']}"
+        vectors: list = []
         for start in range(0, len(pieces), batch):
-            part = pieces[start : start + batch]
             # Заголовок находки приклеивается к каждому куску: «Как чинить»
             # без него не найдётся — в тексте рекомендации самой уязвимости
             # обычно не названо
-            vectors = embed_batch([f"{title}\n\n{piece}" for piece in part])
-            client.upsert(
-                collection_name=collection,
-                points=[
-                    models.PointStruct(
-                        id=point_id(SOURCE, str(record["id"]), start + i),
-                        vector={config.DENSE_VECTOR: vec},
-                        payload={
-                            "source": SOURCE,
-                            "source_id": str(record["id"]),
-                            "space": record["product"],
-                            "title": title,
-                            "url": record["url"],
-                            "acl_groups": [f"dojo:{record['product']}"],
-                            "updated_at": record["updated"],
-                            "chunk_idx": start + i,
-                            "heading": title,
-                            "text": piece,
-                            "finding_id": str(record["id"]),
-                            "product": record["product"],
-                            "severity": record["severity"],
-                            "finding_status": record["status"],
-                            "scanner": record["scanner"],
-                            "cwe": record["cwe"],
-                            "component": record["component"],
-                            "location": record["location"],
-                            "found_at": record["date"],
-                            # Описание и рекомендация кладутся ПОЛЯМИ, а не
-                            # только в текст для поиска. Без этого отчёт по
-                            # продукту получался с пустой графой «как чинить»:
-                            # текст рекомендации доставался лишь тогда, когда
-                            # находку нашли смысловым поиском, а при отборе по
-                            # фильтру — нет. Пишем только в первый чанк:
-                            # дублировать в каждый незачем, а карточку
-                            # retriever и так предпочитает при выборке
-                            "description": record["description"] if start + i == 0 else "",
-                            "mitigation": record["mitigation"] if start + i == 0 else "",
-                            "impact": record["impact"] if start + i == 0 else "",
-                        },
-                    )
-                    for i, (piece, vec) in enumerate(zip(part, vectors))
-                ],
-                wait=True,
+            vectors.extend(
+                embed_batch([f"{title}\n\n{p}" for p in pieces[start : start + batch]])
             )
-            total += len(part)
+
+        # Сначала векторы, потом замена. Если эмбеддер упадёт, находка
+        # останется в базе в прежнем виде, а не исчезнет. Старые точки удаляем
+        # целиком: описание могло стать короче, и лишний хвостовой чанк иначе
+        # остался бы висеть
+        client.delete(collection_name=collection, points_selector=_by_id(fid), wait=True)
+        client.upsert(
+            collection_name=collection,
+            points=points_for(record, pieces, vectors),
+            wait=True,
+        )
+        total += len(pieces)
+
+    # Пропавшие из выдачи API: удалены в DefectDojo, продукт убран из
+    # DOJO_PRODUCTS или у ключа отобрали права. Закрытые сюда НЕ попадают —
+    # они остаются в выдаче со статусом fixed и обновляются как изменившиеся
+    gone = sorted(set(previous) - set(current))
+    if gone and not force_prune and len(gone) > max(10, len(previous) // 2):
+        print(
+            f"\n[!] Из DefectDojo разом пропало {len(gone)} из {len(previous)} находок.\n"
+            "    Удалять не стал: так выглядит скорее сменившийся ключ, права или\n"
+            "    DOJO_PRODUCTS, чем настоящее удаление. Если всё верно:\n"
+            "    python -m kb.dojo_index --force-prune"
+        )
+        # Запоминаем их как есть, чтобы следующий прогон снова их заметил
+        for fid in gone:
+            current[fid] = previous[fid]
+        gone = []
+
+    for fid in gone:
+        client.delete(collection_name=collection, points_selector=_by_id(fid), wait=True)
+
+    save_state(state_path, current, DOJO_CHUNKER_VERSION)
 
     info = client.get_collection(collection)
     print(f"\nЗаписано чанков: {total}")
+    print(f"Без изменений, пропущено находок: {skipped}")
+    if gone:
+        print(f"Пропало из DefectDojo и убрано из индекса: {len(gone)}")
     print(f"Всего в коллекции {collection}: {info.points_count}")
     return total
 
@@ -277,6 +404,22 @@ def main() -> int:
     )
     ap.add_argument("--collection", default=config.COLLECTION)
     ap.add_argument("--batch", type=int, default=16)
+    ap.add_argument(
+        "--state",
+        default=STATE_PATH,
+        metavar="ФАЙЛ",
+        help=f"где помнить, что уже посчитано (по умолчанию {STATE_PATH})",
+    )
+    ap.add_argument(
+        "--full",
+        action="store_true",
+        help="пересчитать все находки, не глядя на то, что уже посчитано",
+    )
+    ap.add_argument(
+        "--force-prune",
+        action="store_true",
+        help="удалить пропавшие находки, даже если их подозрительно много",
+    )
     args = ap.parse_args()
 
     if args.source_dir:
@@ -296,7 +439,9 @@ def main() -> int:
     if args.dump and not args.source_dir:
         print(f"Файлы: {args.dump}")
 
-    index(records, args.collection, args.batch)
+    state_path = Path(args.state)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    index(records, args.collection, args.batch, state_path, args.full, args.force_prune)
     return 0
 
 

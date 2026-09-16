@@ -1,5 +1,5 @@
 #!/bin/sh
-# Поставить расписание обновления Confluence и Jira через таймеры systemd.
+# Поставить расписание обновления Confluence, DefectDojo и Jira через таймеры systemd.
 #
 #   ./install-timers.sh --dry-run        показать юниты, ничего не меняя
 #   sudo ./install-timers.sh             поставить
@@ -14,9 +14,9 @@
 #   - логи идут в системный журнал (journalctl -u local-ai-jira), не нужно
 #     думать, куда перенаправлять вывод и есть ли права писать в /var/log
 #
-# Сами обновления — те же confluence/cron.sh и jira/cron.sh, меняется только
-# то, что их запускает. Расписание то же: Confluence в начале чётного часа,
-# Jira в половине, сверка Jira ночью в 3:15.
+# Сами обновления — те же confluence/cron.sh, dojo/cron.sh и jira/cron.sh,
+# меняется только то, что их запускает. Расписание то же: Confluence в начале
+# чётного часа, DefectDojo в четверть, Jira в половине, сверка Jira ночью в 3:15.
 #
 # Юниты системные и выполняются от root. У root гарантированно есть доступ к
 # docker, а пользовательские таймеры без отдельной настройки перестают
@@ -34,6 +34,7 @@ MODE="${1:-install}"
 
 # имя юнита | расписание | скрипт | аргументы | описание
 JOBS="local-ai-confluence|*-*-* 00/2:00:00|$ROOT/confluence/cron.sh||Обновление Confluence
+local-ai-dojo|*-*-* 00/2:15:00|$ROOT/dojo/cron.sh||Обновление находок DefectDojo
 local-ai-jira|*-*-* 00/2:30:00|$ROOT/jira/cron.sh||Обновление Jira
 local-ai-jira-prune|*-*-* 03:15:00|$ROOT/jira/cron.sh|--prune|Сверка Jira: убрать задачи вне охвата"
 
@@ -131,7 +132,7 @@ if command -v systemd-analyze >/dev/null 2>&1; then
     done
 fi
 
-chmod +x "$ROOT/confluence/cron.sh" "$ROOT/jira/cron.sh"
+chmod +x "$ROOT/confluence/cron.sh" "$ROOT/jira/cron.sh" "$ROOT/dojo/cron.sh"
 
 printf '%s\n' "$JOBS" | while IFS='|' read -r name when script args desc; do
     service_unit "$script" "$args" "$desc" > "$UNIT_DIR/$name.service"
@@ -140,7 +141,7 @@ printf '%s\n' "$JOBS" | while IFS='|' read -r name when script args desc; do
 done
 
 $SYSTEMCTL daemon-reload
-$SYSTEMCTL enable --now local-ai-confluence.timer local-ai-jira.timer local-ai-jira-prune.timer
+$SYSTEMCTL enable --now local-ai-confluence.timer local-ai-dojo.timer local-ai-jira.timer local-ai-jira-prune.timer
 
 echo
 echo "Расписание установлено. Ближайшие запуски:"
