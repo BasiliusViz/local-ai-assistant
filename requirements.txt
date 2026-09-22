@@ -5,3 +5,25 @@ httpx==0.28.1
 # выгрузка Confluence (confluence/sync.py) и Jira (jira/sync.py) — запускаются
 # в этом же контейнере, чтобы на сервере не требовался Python
 requests>=2.31
+# Разбор кода на функции для поиска (kb/code_chunks.py). Версии — те же, что
+# ставит graphifyy в образ code-graph: зеркало PyPI в контуре их уже отдавало
+tree-sitter==0.25.2
+tree-sitter-bash==0.25.1
+tree-sitter-c==0.24.2
+tree-sitter-c-sharp==0.23.5
+tree-sitter-cpp==0.23.4
+tree-sitter-go==0.25.0
+tree-sitter-groovy==0.1.2
+tree-sitter-java==0.23.5
+tree-sitter-javascript==0.25.0
+tree-sitter-julia==0.23.1
+tree-sitter-kotlin==1.1.0
+tree-sitter-lua==0.5.0
+tree-sitter-php==0.24.1
+tree-sitter-powershell==0.26.4
+tree-sitter-ruby==0.23.1
+tree-sitter-rust==0.24.2
+tree-sitter-scala==0.26.2
+tree-sitter-swift==0.7.3
+tree-sitter-typescript==0.23.2
+tree-sitter-zig==1.1.2

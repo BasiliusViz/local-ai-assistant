@@ -33,20 +33,39 @@ from pathlib import Path
 
 from qdrant_client import QdrantClient, models
 
-from kb import config
+from kb import code_chunks, config
 from kb.embedder import embed_batch
 
 log = logging.getLogger(__name__)
 
 CODE_COLLECTION = "code"
 
-# Инфраструктурные файлы графом не разбираются, но искать по ним нужно:
-# «какая джоба деплоит сервис», «от какого образа наследуемся»
+# Языки программирования режутся на функции в kb/code_chunks.py (tree-sitter),
+# Python — здесь, через ast. Остальное, по чему искать нужно, но разбирать
+# нечего, идёт кусками текста: «какая джоба деплоит сервис», «от какого
+# образа наследуемся», «какая таблица хранит платежи»
 TEXT_FILES = {
-    "Jenkinsfile", "Dockerfile", "Makefile", "docker-compose.yml",
-    "docker-compose.yaml", "requirements.txt", "pyproject.toml",
+    "Dockerfile", "Makefile", "docker-compose.yml", "docker-compose.yaml",
+    "requirements.txt", "pyproject.toml", "go.mod", "pom.xml", "package.json",
+    "Cargo.toml", "composer.json", "Vagrantfile", "Procfile", ".gitlab-ci.yml",
 }
-TEXT_SUFFIXES = {".yml", ".yaml", ".sh", ".tf", ".ini", ".cfg", ".toml"}
+TEXT_SUFFIXES = {
+    ".yml", ".yaml", ".tf", ".tfvars", ".hcl", ".ini", ".cfg", ".toml", ".conf",
+    ".properties", ".sql", ".proto", ".graphql", ".gql", ".xml", ".md", ".rst",
+    ".dockerfile", ".vue", ".svelte", ".ex", ".exs", ".erl", ".dart", ".r",
+    ".pl", ".pm", ".bat", ".cmd", ".j2", ".tpl",
+}
+
+# Слишком большой файл почти всегда сгенерирован (схемы, дампы, бандлы), и в
+# выдаче он только шумит, а в индексации стоит дороже всего
+MAX_FILE_BYTES = 300_000
+# Сгенерированное и минифицированное — по имени. Такой код не пишут руками,
+# и «где реализовано X» на него указывать не должен
+GENERATED_MARKERS = (
+    ".min.js", ".min.css", ".pb.go", "_pb2.py", "_pb2_grpc.py", ".pb.cc", ".pb.h",
+    ".generated.", "_generated.", ".g.dart", ".designer.cs", "bundle.js",
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "go.sum", "cargo.lock",
+)
 
 # Тесты и вендорные каталоги только зашумляют выдачу: на вопрос «где
 # реализовано X» первым лезет тест этого X, а не сама реализация
@@ -59,9 +78,15 @@ SKIP_DIRS = {
     # каталоги тестов целиком: фильтр по имени файла их не ловит
     # (tests/__init__.py, tests/testserver/server.py), а в выдаче они
     # вытесняют саму реализацию
-    "tests", "test", "testing", "e2e", "fixtures",
+    "tests", "test", "testing", "e2e", "fixtures", "__tests__", "__mocks__",
+    # сборка и кеши других языков: target — Maven/Cargo, obj — .NET
+    "target", "obj", ".gradle", ".terraform", ".next", ".nuxt", "coverage",
+    "__generated__", "generated", "Pods",
 }
-SKIP_NAME_PARTS = ("test_", "_test", "conftest")
+SKIP_NAME_PARTS = ("test_", "_test", "conftest", ".spec.", ".test.", "_spec.rb")
+# Тесты по соглашениям Java/Kotlin/C#/Scala: PaymentTest.java, PaymentIT.kt
+TEST_SUFFIXES = ("Test", "Tests", "IT", "Spec")
+TEST_LANG_EXT = {".java", ".kt", ".scala", ".groovy", ".cs"}
 
 MAX_CHUNK_CHARS = 4000
 
@@ -70,7 +95,18 @@ def _skip(path: Path) -> bool:
     if any(part in SKIP_DIRS for part in path.parts):
         return True
     name = path.name.lower()
-    return any(marker in name for marker in SKIP_NAME_PARTS)
+    if any(marker in name for marker in SKIP_NAME_PARTS):
+        return True
+    return path.suffix in TEST_LANG_EXT and path.stem.endswith(TEST_SUFFIXES)
+
+
+def _generated(path: Path, source: str) -> bool:
+    name = path.name.lower()
+    if any(marker in name for marker in GENERATED_MARKERS):
+        return True
+    # Минифицированное без говорящего имени: строки по сотни символов
+    lines = source.splitlines() or [""]
+    return len(source) > 5000 and len(source) / len(lines) > 300
 
 
 def _signature(node: ast.AST) -> str:
@@ -172,9 +208,17 @@ def collect(root: Path) -> list[dict]:
     items = []
     # Расширения, отброшенные по типу: подсказка, что дописать в TEXT_SUFFIXES
     skipped_ext: dict[str, int] = {}
-    for repo_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+    # Сколько файлов какого языка разрезано на функции — видно, что работает
+    by_lang: dict[str, int] = {}
+    # Скрытые каталоги — это недокачанные клоны repos/sync.py (.имя.partial),
+    # graph — общий граф code-graph: ни то ни другое не репозиторий
+    repo_dirs = [
+        p for p in root.iterdir()
+        if p.is_dir() and not p.name.startswith(".") and p.name != "graph"
+    ]
+    for repo_dir in sorted(repo_dirs):
         repo = repo_dir.name
-        seen = taken = by_name = 0
+        seen = taken = by_name = generated = 0
         before = len(items)
         # os.walk, а не rglob: в репозиториях встречаются симлинки на
         # несуществующие цели (тесты с сертификатами, подмодули). Windows даёт
@@ -190,25 +234,45 @@ def collect(root: Path) -> list[dict]:
                 seen += 1
 
                 is_py = path.suffix == ".py"
-                is_text = path.name in TEXT_FILES or path.suffix in TEXT_SUFFIXES
-                if not (is_py or is_text):
+                lang = code_chunks.language_for(path)
+                is_text = (
+                    path.name in TEXT_FILES
+                    or path.suffix.lower() in TEXT_SUFFIXES
+                    or path.name.startswith("Dockerfile")
+                )
+                if not (is_py or lang or is_text):
                     ext = path.suffix.lower() or "(без расширения)"
                     skipped_ext[ext] = skipped_ext.get(ext, 0) + 1
                     continue
 
                 try:
+                    if path.stat().st_size > MAX_FILE_BYTES:
+                        generated += 1
+                        continue
                     source = path.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
                 if not source.strip():
                     continue
+                if _generated(path, source):
+                    generated += 1
+                    continue
 
                 rel = str(path.relative_to(repo_dir)).replace("\\", "/")
-                found = (
-                    _python_chunks(path, rel, repo, source)
-                    if is_py
-                    else _text_chunks(path, source)
-                )
+                if is_py:
+                    found = _python_chunks(path, rel, repo, source)
+                    lang_name = "python"
+                elif lang:
+                    found = code_chunks.chunks(path, source, MAX_CHUNK_CHARS)
+                    lang_name = lang[0]
+                    # Разборщика нет или он не справился — не теряем файл
+                    if found is None:
+                        found = _text_chunks(path, source)
+                        lang_name = f"{lang[0]} (текстом)"
+                else:
+                    found = _text_chunks(path, source)
+                    lang_name = "текст"
+                by_lang[lang_name] = by_lang.get(lang_name, 0) + 1
                 taken += 1
                 for chunk in found:
                     chunk["repo"] = repo
@@ -216,10 +280,17 @@ def collect(root: Path) -> list[dict]:
                     items.append(chunk)
 
         note = f", отброшено как тесты: {by_name}" if by_name else ""
+        if generated:
+            note += f", сгенерированных и огромных: {generated}"
         print(
             f"--- {repo}: подходящих файлов {taken} из {seen}{note}, "
             f"чанков {len(items) - before}"
         )
+
+    if by_lang:
+        print("\nФайлов по языкам:")
+        for name, count in sorted(by_lang.items(), key=lambda kv: -kv[1]):
+            print(f"  {name}: {count}")
 
     if skipped_ext:
         top = sorted(skipped_ext.items(), key=lambda kv: -kv[1])[:12]

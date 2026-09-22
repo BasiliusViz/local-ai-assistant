@@ -1,0 +1,239 @@
+"""Проверка нарезки кода на функции: разборщики на месте и режут как надо.
+
+На сервере, после пересборки kb:
+    docker compose exec kb python -m kb.test_code_chunks
+
+Qdrant, Ollama и сеть не нужны. Если что-то упало — пришлите вывод целиком.
+"""
+
+from __future__ import annotations
+
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+
+from kb import code_chunks, code_index
+
+LIMIT = code_index.MAX_CHUNK_CHARS
+
+SAMPLES: dict[str, tuple[str, set[str]]] = {
+    # имя файла: (код, символы, которые обязаны найтись)
+    "server.go": ('''package main
+
+// Server держит порт и обработчики.
+type Server struct {
+    port int
+}
+
+type Handler interface {
+    Serve() error
+}
+
+// Start поднимает сервер.
+func (s *Server) Start(ctx context.Context) error {
+    return nil
+}
+
+func main() {
+    fmt.Println("x")
+}
+''', {"Server", "Handler", "Server.Start", "main"}),
+    "Payment.java": ('''package a;
+public class Payment extends Base {
+    public Payment(int x) { }
+    public void charge(int amount) throws Exception {
+        log.info("charge");
+    }
+    interface Inner { void go(); }
+}
+''', {"Payment", "Payment.Payment", "Payment.charge", "Payment.Inner"}),
+    "Order.kt": ('''package a
+class Order(val id: Int) {
+    fun total(): Int { return 1 }
+}
+object Registry { fun get() = 1 }
+fun main() { println("x") }
+''', {"Order", "Order.total", "Registry", "main"}),
+    "deploy.groovy": ('''def call(Map cfg) {
+    pipeline { agent any }
+}
+class Deploy {
+    def run(String env) { println env }
+}
+''', {"call", "Deploy", "Deploy.run"}),
+    "api.js": ('''class Api {
+  constructor() {}
+  async get(id) { return 1 }
+}
+function handler(req, res) { }
+const util = (a) => a + 1;
+export function exported() {}
+''', {"Api", "Api.constructor", "Api.get", "handler", "util", "exported"}),
+    "svc.ts": ('''interface User { id: number }
+export class Svc {
+  private run(x: string): void {}
+}
+export const fetchUser = async (id: number): Promise<User> => { return {id} }
+function g<T>(a: T): T { return a }
+''', {"User", "Svc", "Svc.run", "fetchUser", "g"}),
+    "App.tsx": ('''export function App() { return <div/> }
+const Button = () => <button/>;
+''', {"App", "Button"}),
+    "Account.cs": ('''namespace A.B {
+  public class Account {
+    public Account() {}
+    public void Debit(decimal x) { }
+  }
+  public interface IRepo { void Save(); }
+}
+''', {"Account", "Account.Account", "Account.Debit", "IRepo"}),
+    "math.c": ('''#include <stdio.h>
+struct point { int x; };
+static int add(int a, int b) { return a + b; }
+int *make(void) { return 0; }
+''', {"point", "add", "make"}),
+    "foo.cpp": ('''namespace ns {
+class Foo { public: void bar(int x) { } };
+}
+void Foo::baz() const { }
+int main() { return 0; }
+''', {"Foo", "Foo.bar", "Foo::baz", "main"}),
+    "Invoice.php": ('''<?php
+class Invoice { public function total(): int { return 1; } }
+function helper($a) { }
+''', {"Invoice", "Invoice.total", "helper"}),
+    "billing.rb": ('''module Billing
+  class Invoice
+    def total; 1; end
+    def self.build; new; end
+  end
+end
+''', {"Billing", "Billing.Invoice", "Billing.Invoice.total", "Billing.Invoice.build"}),
+    "point.rs": ('''struct Point { x: i32 }
+impl Point {
+    fn new() -> Self { Point { x: 1 } }
+}
+fn main() {}
+''', {"Point", "Point.new", "main"}),
+    "Main.scala": ('''object Main { def main(args: Array[String]): Unit = {} }
+class Svc { def run(x: Int): Int = x }
+''', {"Main", "Main.main", "Svc", "Svc.run"}),
+    "Car.swift": ('''class Car { func drive(speed: Int) {} }
+func top() {}
+''', {"Car", "Car.drive", "top"}),
+    "deploy.sh": ('''#!/bin/bash
+deploy() { echo hi; }
+function build { make; }
+''', {"deploy", "build"}),
+    "tools.ps1": ('''function Get-Thing { param($a) Write-Host $a }
+''', {"Get-Thing"}),
+    "mod.lua": ('''local function helper(a) return a end
+function M.run(x) return x end
+''', {"helper", "M.run"}),
+}
+
+
+class Languages(unittest.TestCase):
+    def test_every_language_finds_its_symbols(self):
+        for name, (code, expected) in SAMPLES.items():
+            with self.subTest(file=name):
+                found = code_chunks.chunks(Path(name), code, LIMIT)
+                self.assertIsNotNone(found, f"{name}: разборщик недоступен")
+                symbols = {c["symbol"] for c in found}
+                missing = expected - symbols
+                self.assertFalse(missing, f"{name}: не нашлось {missing}, есть {symbols}")
+
+    def test_line_numbers_and_text(self):
+        code, _ = SAMPLES["server.go"]
+        found = {c["symbol"]: c for c in code_chunks.chunks(Path("server.go"), code, LIMIT)}
+        start = found["Server.Start"]
+        self.assertEqual((start["line_start"], start["line_end"]), (13, 15))
+        self.assertIn("func (s *Server) Start", start["text"])
+        self.assertEqual(start["kind"], "method")
+        self.assertIn("Start поднимает сервер", start["doc"])
+        self.assertTrue(start["signature"].startswith("func (s *Server) Start"))
+
+    def test_interface_methods_without_body_are_not_separate(self):
+        code, _ = SAMPLES["Payment.java"]
+        symbols = {c["symbol"] for c in code_chunks.chunks(Path("Payment.java"), code, LIMIT)}
+        self.assertNotIn("Payment.Inner.go", symbols)
+
+    def test_script_top_level_is_not_lost(self):
+        code = "pipeline {\n  agent any\n  stages {\n    stage('Deploy') {\n      steps { sh 'make deploy' }\n    }\n  }\n}\n"
+        found = code_chunks.chunks(Path("Jenkinsfile"), code, LIMIT)
+        self.assertTrue(any("make deploy" in c["text"] for c in found))
+
+    def test_script_with_functions_keeps_the_rest(self):
+        code = "#!/bin/bash\nhelper() { echo; }\n" + "".join(f"echo step{i}\n" for i in range(20))
+        found = code_chunks.chunks(Path("run.sh"), code, LIMIT)
+        self.assertIn("helper", {c["symbol"] for c in found})
+        self.assertTrue(any("step19" in c["text"] for c in found))
+
+    def test_unknown_extension_returns_none(self):
+        self.assertIsNone(code_chunks.chunks(Path("x.unknown"), "abc", LIMIT))
+
+    def test_long_function_is_truncated(self):
+        body = "\n".join(f"    x{i} := {i}" for i in range(2000))
+        code = f"package a\nfunc big() {{\n{body}\n}}\n"
+        found = code_chunks.chunks(Path("big.go"), code, LIMIT)
+        self.assertTrue(all(len(c["text"]) <= LIMIT for c in found))
+
+    def test_broken_code_does_not_crash(self):
+        found = code_chunks.chunks(Path("x.go"), "func ((( {{{ broken", LIMIT)
+        self.assertIsNotNone(found)
+
+
+class Collect(unittest.TestCase):
+    """Обход каталога целиком: что берётся, что отбрасывается."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def put(self, rel: str, text: str) -> None:
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def test_what_is_taken_and_what_is_skipped(self):
+        go, _ = SAMPLES["server.go"]
+        java, _ = SAMPLES["Payment.java"]
+        self.put("svc/cmd/server.go", go)
+        self.put("svc/src/main/java/Payment.java", java)
+        self.put("svc/Jenkinsfile", "pipeline { agent any }\n")
+        self.put("svc/README.md", "# Сервис платежей\n\nПринимает платежи.\n")
+        self.put("svc/db/schema.sql", "CREATE TABLE payments (id int);\n")
+        # всё ниже в индекс попадать не должно
+        self.put("svc/cmd/server_test.go", go)
+        self.put("svc/src/test/java/PaymentTest.java", java)
+        self.put("svc/src/main/java/PaymentTest.java", java)
+        self.put("svc/web/app.spec.ts", "function t() {}\n")
+        self.put("svc/api/api.pb.go", go)
+        self.put("svc/web/lib.min.js", "function a(){}\n")
+        self.put("svc/web/huge.js", "x".join([""] * 400_000))
+        self.put("svc/target/Gen.java", java)
+        self.put("svc/node_modules/x/index.js", "function x() {}\n")
+        self.put("svc/logo.png", "not really png")
+        self.put(".svc.partial/half.go", go)  # недокачанный клон
+        self.put("graph/graph.json", "{}")
+
+        items = code_index.collect(self.root)
+        paths = {c["path"] for c in items}
+        self.assertEqual(
+            paths,
+            {"cmd/server.go", "src/main/java/Payment.java", "Jenkinsfile", "README.md", "db/schema.sql"},
+        )
+        self.assertEqual({c["repo"] for c in items}, {"svc"})
+        symbols = {c["symbol"] for c in items}
+        self.assertIn("Server.Start", symbols)
+        self.assertIn("Payment.charge", symbols)
+
+    def test_python_still_uses_ast(self):
+        self.put("py/app.py", "class A:\n    def run(self):\n        return 1\n")
+        symbols = {c["symbol"] for c in code_index.collect(self.root)}
+        self.assertEqual(symbols, {"A", "A.run"})
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
