@@ -1,11 +1,11 @@
 #!/bin/sh
-# Поставить расписание обновления Confluence, DefectDojo и Jira в cron.
+# Поставить расписание обновления Confluence, DefectDojo, Jira и кода в cron.
 #
 #   ./install-cron.sh             поставить
 #   ./install-cron.sh --dry-run   показать, что получится, ничего не меняя
 #
 # Чужие задачи в crontab не трогает: убирает только свои старые строки (те, где
-# есть confluence/cron.sh, dojo/cron.sh или jira/cron.sh) и дописывает
+# есть confluence/cron.sh, dojo/cron.sh, jira/cron.sh или repos/cron.sh) и дописывает
 # актуальные. Пометку MARK не переименовывать: по ней находится и убирается
 # строка, поставленная прошлой версией скрипта. Поэтому
 # запускать повторно безопасно — например, когда в репозитории поменялось
@@ -14,6 +14,8 @@
 # Ставить от того пользователя, у которого есть доступ к docker. Если docker
 # вы запускаете через sudo — запускайте и этот скрипт через sudo, иначе cron
 # будет запускать обновление от пользователя без прав, и оно молча не сработает.
+# Но код (repos/cron.sh) клонирует от того же пользователя: поставите от root —
+# новые клоны в CODE_DIR будут root-овыми, и без sudo их не удалить.
 #
 # Куда пишется лог. Обычному пользователю писать в /var/log нельзя, и cron
 # ничего не сообщит об ошибке — просто не будет записей. Поэтому от root лог
@@ -48,6 +50,8 @@ our_lines() {
     echo "15 */2 * * * $ROOT/dojo/cron.sh >> $LOG_DIR/local-ai-dojo.log 2>&1"
     echo "30 */2 * * * $ROOT/jira/cron.sh >> $LOG_DIR/local-ai-jira.log 2>&1"
     echo "15 3 * * * $ROOT/jira/cron.sh --prune >> $LOG_DIR/local-ai-jira.log 2>&1"
+    # Код — раз в сутки: его индексация пока пересчитывает всё целиком
+    echo "0 2 * * * $ROOT/repos/cron.sh >> $LOG_DIR/local-ai-code.log 2>&1"
 }
 
 # Текущее расписание. Если его ещё нет вовсе, crontab -l завершается ошибкой —
@@ -55,7 +59,7 @@ our_lines() {
 current="$($CRONTAB -l 2>/dev/null || true)"
 
 # Всё чужое остаётся как было; наши прошлые строки и пометка — убираются
-kept="$(printf '%s\n' "$current" | grep -v -e '/confluence/cron.sh' -e '/jira/cron.sh' -e '/dojo/cron.sh' -e "^$MARK\$" || true)"
+kept="$(printf '%s\n' "$current" | grep -v -e '/confluence/cron.sh' -e '/jira/cron.sh' -e '/dojo/cron.sh' -e '/repos/cron.sh' -e "^$MARK\$" || true)"
 
 result="$(
     if [ -n "$kept" ]; then
@@ -84,8 +88,15 @@ if ! docker compose version >/dev/null 2>&1; then
     echo
 fi
 
+if [ "$(id -u)" = "0" ]; then
+    echo "[!] Ставлю от root: обновление кода (repos/cron.sh) тоже пойдёт от root,"
+    echo "    и новые клоны в CODE_DIR будут принадлежать root. Если у вашего"
+    echo "    пользователя есть доступ к docker — лучше поставить от него."
+    echo
+fi
+
 mkdir -p "$LOG_DIR"
-chmod +x "$ROOT/confluence/cron.sh" "$ROOT/jira/cron.sh" "$ROOT/dojo/cron.sh"
+chmod +x "$ROOT/confluence/cron.sh" "$ROOT/jira/cron.sh" "$ROOT/dojo/cron.sh" "$ROOT/repos/cron.sh"
 
 printf '%s\n' "$result" | $CRONTAB -
 
@@ -94,4 +105,4 @@ echo "-----------------------"
 $CRONTAB -l
 echo
 echo "Первые записи в логах появятся в ближайший чётный час (Confluence) и в"
-echo "половине часа (Jira). Смотреть: tail -f $LOG_DIR/local-ai-jira.log"
+echo "половине часа (Jira), код — в 2:00. Смотреть: tail -f $LOG_DIR/local-ai-jira.log"
