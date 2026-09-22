@@ -219,8 +219,8 @@ def code_search(
         query: описание того, что ищешь, обычными словами
         top_k: сколько фрагментов вернуть, 1-25. По умолчанию 8
         repo_filter: ограничить одним репозиторием. Без него ищет по всем
-        response_format: "concise" (по умолчанию) — фрагмент кода обрезан,
-            "detailed" — код целиком
+        response_format: "concise" (по умолчанию) — первые два фрагмента
+            целиком, остальные — начало; "detailed" — все целиком
 
     Returns:
         found и results: для каждого найденного — location вида
@@ -264,7 +264,7 @@ def code_search(
     detailed = response_format == "detailed"
     return {
         "found": len(hits),
-        "results": [h.as_dict(full_code=detailed) for h in hits],
+        "results": code_retriever.shape(hits, detailed),
         "citation_instruction": (
             "Для каждого фрагмента указывай его location (файл и строку) — "
             "это ответ на вопрос «куда идти править»."

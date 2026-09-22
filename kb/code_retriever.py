@@ -59,6 +59,46 @@ class CodeHit:
         return out
 
 
+# Сколько лучших фрагментов отдаётся целиком в обычном режиме и общий бюджет
+# символов кода на ответ. Раньше все фрагменты резались до 600 символов, и от
+# куска Jenkinsfile (до 120 строк) модель видела только @Library и agent —
+# стадий не было, и она говорила, что внутри ничего нет. Полный текст
+# давал лишь "detailed", а модель его почти никогда не просит
+FULL_TOP = 2
+PREVIEW_CHARS = 600
+BUDGET_CHARS = 9000
+
+
+def shape(hits: list[CodeHit], detailed: bool) -> list[dict]:
+    """Ответ инструмента: лучшие целиком, остальные — началом, в пределах бюджета.
+
+    Бюджет нужен, потому что у модели ограничен контекст: восемь кусков по
+    4000 символов — это уже больше, чем влезает в 8K токенов вместе с
+    вопросом и ответом.
+    """
+    out = []
+    left = BUDGET_CHARS
+    for i, hit in enumerate(hits):
+        item = hit.as_dict(full_code=True)
+        code = item["code"]
+        if detailed:
+            keep = len(code)
+        elif i < FULL_TOP:
+            keep = max(left, PREVIEW_CHARS)  # лучшие — целиком, пока есть бюджет
+        else:
+            keep = min(PREVIEW_CHARS, max(left, 0))
+        if keep <= 0:
+            # бюджет кончился — только адрес: куда идти, без кода
+            item.pop("code")
+            item["truncated"] = True
+        elif keep < len(code):
+            item["code"] = code[:keep]
+            item["truncated"] = True
+        left -= len(item.get("code", ""))
+        out.append(item)
+    return out
+
+
 def available() -> bool:
     try:
         return client().collection_exists(CODE_COLLECTION)

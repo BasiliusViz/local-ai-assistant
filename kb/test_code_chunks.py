@@ -303,6 +303,36 @@ def helper(x) {
         self.assertIsNotNone(found)
 
 
+class Shape(unittest.TestCase):
+    """Сколько кода уходит модели в ответе code_search."""
+
+    def hits(self, sizes):
+        from kb.code_retriever import CodeHit
+        return [CodeHit("r", f"f{i}", f"s{i}", "text", "", "", 1, 2, "x" * n, 0.9)
+                for i, n in enumerate(sizes)]
+
+    def test_top_two_whole_rest_preview(self):
+        from kb import code_retriever as cr
+        out = cr.shape(self.hits([4000, 3000, 2000, 2000]), detailed=False)
+        self.assertEqual([len(o.get("code", "")) for o in out], [4000, 3000, 600, 600])
+        self.assertNotIn("truncated", out[0])
+        self.assertTrue(out[2]["truncated"])
+
+    def test_budget_is_respected(self):
+        from kb import code_retriever as cr
+        out = cr.shape(self.hits([4000] * 8), detailed=False)
+        total = sum(len(o.get("code", "")) for o in out)
+        self.assertLessEqual(total, cr.BUDGET_CHARS)
+        self.assertEqual(len(out[0]["code"]), 4000)
+        self.assertEqual(len(out[1]["code"]), 4000)
+        self.assertTrue(all("location" in o for o in out), "адрес есть всегда")
+
+    def test_detailed_is_whole(self):
+        from kb import code_retriever as cr
+        out = cr.shape(self.hits([4000] * 5), detailed=True)
+        self.assertEqual([len(o["code"]) for o in out], [4000] * 5)
+
+
 class Collect(unittest.TestCase):
     """Обход каталога целиком: что берётся, что отбрасывается."""
 
