@@ -102,6 +102,9 @@ class Repo:
     branch: str  # пусто — основная ветка сервера
     dirname: str
     provider: Provider | None
+    # Прежнее имя каталога (сервис-проект-репозиторий): так клоны назывались
+    # до перехода на короткие имена. Найденный под ним клон переименовывается
+    long_name: str = ""
 
 
 # ---------------------------------------------------------------- настройки
@@ -242,11 +245,22 @@ def _strip_userinfo(url: str) -> str:
     return f"{parts.scheme}://***@{host}{parts.path}"
 
 
-def dir_name(url: str, provider: Provider | None) -> str:
-    """Каталог клона: сервис-проект-репозиторий.
+def short_name(url: str) -> str:
+    """Каталог клона по умолчанию — просто имя репозитория: access-server.
 
-    Одно имя репозитория ненадёжно: backend.git бывает в каждом проекте, и
-    второй клон лёг бы поверх первого.
+    Приписка сервис-проект (bitbucket-SSDLINF-...) мешала читать и граф, и
+    выдачу поиска. Длинное имя остаётся только при совпадении коротких.
+    """
+    last = [s for s in urlsplit(url).path.split("/") if s][-1:] or ["repo"]
+    name = last[0][:-4] if last[0].endswith(".git") else last[0]
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name)
+
+
+def dir_name(url: str, provider: Provider | None) -> str:
+    """Длинное имя каталога: сервис-проект-репозиторий.
+
+    Нужно, когда короткие имена совпали: backend.git бывает в каждом проекте,
+    и второй клон лёг бы поверх первого.
     """
     parts = urlsplit(url)
     segments = [s for s in parts.path.split("/") if s]
@@ -278,7 +292,19 @@ def parse_list(raw: str, providers: list[Provider]) -> list[Repo]:
     unique: dict[str, Repo] = {}
     for r in repos:
         unique.setdefault(r.dirname, r)
-    return list(unique.values())
+    result = list(unique.values())
+
+    # Короткое имя там, где оно однозначно; у совпавших — длинное у всех
+    # участников, а не «первому короткое»: иначе имя каталога зависело бы от
+    # порядка строк в списке
+    shorts: dict[str, int] = {}
+    for r in result:
+        shorts[short_name(r.url)] = shorts.get(short_name(r.url), 0) + 1
+    for r in result:
+        r.long_name = r.dirname
+        if shorts[short_name(r.url)] == 1:
+            r.dirname = short_name(r.url)
+    return result
 
 
 # ---------------------------------------------------------------------- git
@@ -418,10 +444,24 @@ def git_version() -> tuple[int, ...]:
 # ------------------------------------------------------------------ действия
 
 
+def _origin_is(path: Path, url: str, git: Git) -> bool:
+    if not (path / ".git").exists():
+        return False
+    try:
+        origin = git.run(["remote", "get-url", "origin"], cwd=path, timeout=CHECK_TIMEOUT)
+    except SyncError:
+        return False
+    return _norm(origin) == _norm(url)
+
+
 def state_of(repo: Repo, root: Path, git: Git) -> str:
-    """new / update / чужой каталог (текст ошибки)."""
+    """new / update / rename / чужой каталог (текст ошибки)."""
     target = root / repo.dirname
     if not target.exists():
+        # Клон под прежним длинным именем — переименовать, а не качать заново
+        old = root / repo.long_name
+        if repo.long_name and repo.long_name != repo.dirname and _origin_is(old, repo.url, git):
+            return "rename"
         return "new"
     if not (target / ".git").exists():
         return f"каталог {target} есть, но это не git-репозиторий — не трогаю"
@@ -585,14 +625,24 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         root.mkdir(parents=True, exist_ok=True)
 
-    stats = {"склонировано": 0, "обновлено": 0, "без изменений": 0, "ошибок": 0}
+    stats = {"склонировано": 0, "переименовано": 0, "обновлено": 0, "без изменений": 0, "ошибок": 0}
     print(f"\nРепозитории ({len(repos)}) -> {root}")
     for r in repos:
         state = state_of(r, root, git)
-        if state not in ("new", "update"):
+        if state not in ("new", "update", "rename"):
             stats["ошибок"] += 1
             print(f"  [!!] {describe(r)}\n       {state}")
             continue
+        if state == "rename":
+            if args.dry_run:
+                print(f"  [переименовать] {r.long_name} -> {r.dirname}")
+            else:
+                # Внутри одного каталога это переименование, содержимое не
+                # трогается: root-овый graphify-out внутри не мешает
+                (root / r.long_name).rename(root / r.dirname)
+                stats["переименовано"] += 1
+                print(f"  [переименован] {r.long_name} -> {r.dirname}")
+            state = "update"
         if args.dry_run:
             print(f"  [{'клон' if state == 'new' else 'обновить'}] {describe(r)}")
             continue

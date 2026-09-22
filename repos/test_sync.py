@@ -105,7 +105,7 @@ class ListFile(unittest.TestCase):
         env = {"CODE_GIT_REPOS_FILE": "repos/list.txt", "CODE_GIT_REPOS": "https://bb.local/scm/P/b.git"}
         with mock.patch.object(sync, "HERE", self.tmp / "repos"):
             repos = sync.parse_list(sync.repo_list(env), [provider(url="https://bb.local")])
-        self.assertEqual(sorted(r.dirname for r in repos), ["bitbucket-P-a", "bitbucket-P-b"])
+        self.assertEqual(sorted(r.dirname for r in repos), ["a", "b"])
 
     def test_missing_file_is_error(self):
         with mock.patch.object(sync, "HERE", self.tmp / "repos"), \
@@ -207,7 +207,14 @@ class Parsing(unittest.TestCase):
                   https://bitbucket.company.local/scm/P/b.git
                   https://bitbucket.company.local/scm/P/a.git """
         repos = sync.parse_list(raw, self.ps)
-        self.assertEqual([r.dirname for r in repos], ["bitbucket-P-a", "bitbucket-P-b"])
+        self.assertEqual([r.dirname for r in repos], ["a", "b"])
+
+    def test_short_names_unless_they_collide(self):
+        raw = ("https://bitbucket.company.local/scm/SSDLINF/access-server.git "
+               "https://bitbucket.company.local/scm/PAY/backend.git "
+               "https://gitflic.company.local/project/team/backend.git")
+        names = [r.dirname for r in sync.parse_list(raw, self.ps)]
+        self.assertEqual(names, ["access-server", "bitbucket-PAY-backend", "gitflic-team-backend"])
 
     def test_same_dir_from_two_urls_is_error(self):
         raw = ("https://bitbucket.company.local/scm/P/a.git "
@@ -388,7 +395,7 @@ class RealGit(unittest.TestCase):
         self.assertIn("ветки nope нет", out)
 
     def test_foreign_directory_is_not_touched(self):
-        repo = sync.parse_repo(self.url, [])
+        repo = sync.parse_list(self.url, [])[0]
         (self.dest / repo.dirname).mkdir()
         (self.dest / repo.dirname / "mine.txt").write_text("x", encoding="utf-8")
         code, out = self.run_main()
@@ -397,7 +404,7 @@ class RealGit(unittest.TestCase):
         self.assertTrue((self.dest / repo.dirname / "mine.txt").exists())
 
     def test_other_repo_in_directory_is_not_touched(self):
-        repo = sync.parse_repo(self.url, [])
+        repo = sync.parse_list(self.url, [])[0]
         git("clone", str(self.bare), str(self.dest / repo.dirname))
         git("remote", "set-url", "origin", "https://elsewhere.local/x.git", cwd=self.dest / repo.dirname)
         code, out = self.run_main()
@@ -443,6 +450,25 @@ class RealGit(unittest.TestCase):
         ):
             with self.subTest(args=args), self.assertRaises(sync.SyncError):
                 g.run(args, cwd=self.tmp)
+
+    def test_old_long_name_is_renamed_not_recloned(self):
+        repo = sync.parse_list(self.url, [])[0]
+        self.assertNotEqual(repo.long_name, repo.dirname)
+        git("clone", str(self.bare), str(self.dest / repo.long_name))
+        git("remote", "set-url", "origin", self.url, cwd=self.dest / repo.long_name)
+        (self.dest / repo.long_name / "graphify-out").mkdir()
+        (self.dest / repo.long_name / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
+
+        code, out = self.run_main("--dry-run")
+        self.assertIn("[переименовать]", out)
+        self.assertTrue((self.dest / repo.long_name).exists(), "dry-run ничего не трогает")
+
+        code, out = self.run_main()
+        self.assertEqual(code, 0, out)
+        self.assertIn("переименовано  1", out)
+        self.assertFalse((self.dest / repo.long_name).exists())
+        self.assertTrue((self.dest / repo.dirname / "graphify-out" / "graph.json").exists())
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir()), [repo.dirname])
 
     def test_one_failure_does_not_stop_others(self):
         missing = (self.tmp / "origin" / "missing.git").as_uri()
