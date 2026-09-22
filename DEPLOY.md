@@ -215,6 +215,13 @@ docker compose exec kb python jira/sync.py --since 90d
 docker compose exec kb python -m kb.dojo --check
 ```
 
+Перед первым прогоном — посмотреть, что будет сделано, ничего не записывая
+(ни эмбеддингов, ни Qdrant, ни файла состояния):
+
+```bash
+docker compose exec kb python -m kb.dojo_index --dry-run
+```
+
 ```bash
 docker compose exec kb python -m kb.dojo_index
 ```

@@ -22,6 +22,7 @@
 Запуск:
     docker compose exec kb python -m kb.dojo_index
     docker compose exec kb python -m kb.dojo_index --full
+    docker compose exec kb python -m kb.dojo_index --dry-run
     docker compose exec kb python -m kb.dojo_index --dump /docs/dojo-dump
     docker compose exec kb python -m kb.dojo_index --from /docs/dojo-dump
 """
@@ -298,6 +299,7 @@ def index(
     state_path: Path,
     full: bool = False,
     force_prune: bool = False,
+    dry_run: bool = False,
 ) -> int:
     """Пересчитать изменившиеся находки и убрать пропавшие.
 
@@ -308,11 +310,13 @@ def index(
     тысячи находок, в которых ничего не поменялось.
     """
     client = QdrantClient(url=config.QDRANT_URL, timeout=120)
-    ensure_collection(client, collection)
-    ensure_dojo_indexes(client, collection)
+    exists = client.collection_exists(collection)
+    if not dry_run:
+        ensure_collection(client, collection)
+        ensure_dojo_indexes(client, collection)
 
     previous = {} if full else load_state(state_path, DOJO_CHUNKER_VERSION)
-    if not previous:
+    if not previous and exists:
         # Истории нет — берём, что лежит в базе, с пустым отпечатком: всё
         # пересчитается, а пропавшее из DefectDojo найдётся и удалится
         previous = {fid: "" for fid in indexed_ids(client, collection)}
@@ -322,13 +326,14 @@ def index(
     current: dict[str, str] = {}
     total = 0
     skipped = 0
+    stats = {"новых": 0, "обновлено": 0}
 
     for number, record in enumerate(records, 1):
         fid = str(record["id"])
         stamp = digest(record)
         current[fid] = stamp
 
-        if number % 100 == 0 or number == len(records):
+        if not dry_run and (number % 100 == 0 or number == len(records)):
             print(f"[{number}/{len(records)}]")
 
         # Ничего не поменялось — векторы в базе актуальны. На прогоне по
@@ -338,6 +343,20 @@ def index(
             continue
 
         pieces = chunks(record)
+        action = "обновлено" if fid in previous else "новых"
+        stats[action] += 1
+
+        # Пробный прогон: показать, что было бы сделано, без эмбеддингов и
+        # без записи в Qdrant
+        if dry_run:
+            print(
+                f"  [{action:9}] {fid:>8} {str(record['severity'] or ''):8} "
+                f"{str(record['product'] or '')[:20]:20} {record['title'][:50]} "
+                f"(чанков: {len(pieces)})"
+            )
+            total += len(pieces)
+            continue
+
         title = f"{record['id']} · {record['title']}"
         vectors: list = []
         for start in range(0, len(pieces), batch):
@@ -375,6 +394,17 @@ def index(
         for fid in gone:
             current[fid] = previous[fid]
         gone = []
+
+    if dry_run:
+        for fid in gone:
+            print(f"  [удалено  ] {fid:>8}")
+        print("\nИтог (пробный прогон, ничего не записано):")
+        print(f"    {'новых':14} {stats['новых']}")
+        print(f"    {'обновлено':14} {stats['обновлено']}")
+        print(f"    {'без изменений':14} {skipped}")
+        print(f"    {'удалено':14} {len(gone)}")
+        print(f"    {'чанков':14} {total}")
+        return total
 
     for fid in gone:
         client.delete(collection_name=collection, points_selector=_by_id(fid), wait=True)
@@ -420,7 +450,12 @@ def main() -> int:
         action="store_true",
         help="удалить пропавшие находки, даже если их подозрительно много",
     )
+    ap.add_argument("--dry-run", action="store_true", help="показать, ничего не писать")
     args = ap.parse_args()
+
+    if args.dry_run and args.dump:
+        print("--dump пишет файлы, а --dry-run ничего не пишет: выберите что-то одно.")
+        return 1
 
     if args.source_dir:
         folder = Path(args.source_dir)
@@ -440,8 +475,17 @@ def main() -> int:
         print(f"Файлы: {args.dump}")
 
     state_path = Path(args.state)
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    index(records, args.collection, args.batch, state_path, args.full, args.force_prune)
+    if not args.dry_run:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+    index(
+        records,
+        args.collection,
+        args.batch,
+        state_path,
+        args.full,
+        args.force_prune,
+        args.dry_run,
+    )
     return 0
 
 
