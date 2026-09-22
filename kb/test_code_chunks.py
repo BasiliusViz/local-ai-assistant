@@ -174,11 +174,20 @@ class Languages(unittest.TestCase):
                 self.assertTrue(any("make deploy" in c["text"] for c in found))
 
     def test_pipeline_block_kept_despite_big_helper(self):
-        helper = "".join(f"    env.V{i} = 'x'\n" for i in range(200))
+        # больше JENKINSFILE_WHOLE — иначе файл уйдёт одним куском и порог не проверится
+        helper = "".join(f"    env.VARIABLE_{i} = 'value'\n" for i in range(400))
         code = f"def prepare() {{\n{helper}}}\npipeline {{\n  stages {{ stage('Deploy to prod') {{ steps {{ sh 'go' }} }} }}\n}}\n"
         found = code_chunks.chunks(Path("Jenkinsfile"), code, LIMIT)
         self.assertIn("prepare", {c["symbol"] for c in found})
         self.assertTrue(any("Deploy to prod" in c["text"] for c in found), "пайплайн потерялся")
+
+    def test_short_jenkinsfile_is_one_chunk(self):
+        code = "def helper() {\n  echo 'x'\n}\npipeline {\n  stages { stage('Build') { steps { sh 'make' } } }\n}\n"
+        found = code_chunks.chunks(Path("Jenkinsfile"), code, LIMIT)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["kind"], "pipeline")
+        self.assertEqual(found[0]["text"], code)
+        self.assertEqual((found[0]["line_start"], found[0]["line_end"]), (1, 6))
 
     def test_pipeline_summary_in_doc(self):
         code = '''@Library(['adpc-jenkins-shared-libs@master', 'common']) _
@@ -387,6 +396,20 @@ class Collect(unittest.TestCase):
         self.assertTrue(pipeline)
         self.assertIn("шаги библиотеки: abActions", pipeline[0]["doc"])
         self.assertIn("стадии: B", pipeline[0]["doc"])
+
+    def test_jenkinsfile_and_job_in_same_folder_know_each_other(self):
+        self.put("adpc-jenkins/jobs/AA/asan/job.groovy",
+                 "pipelineJob('AA/asan') {\n    parameters { stringParam('BRANCH', 'master', '') }\n}\n")
+        self.put("adpc-jenkins/jobs/AA/asan/Jenkinsfile",
+                 "pipeline {\n  stages { stage('Scan') { steps { sh 'asan' } } }\n}\n")
+        items = {c["path"]: c for c in code_index.collect(self.root)}
+        pipeline = items["jobs/AA/asan/Jenkinsfile"]
+        job = items["jobs/AA/asan/job.groovy"]
+        self.assertEqual(pipeline["symbol"], "AA/asan / Jenkinsfile")
+        self.assertIn("джоба: AA/asan", pipeline["doc"])
+        self.assertIn("стадии: Scan", pipeline["doc"])
+        self.assertEqual(job["symbol"], "AA/asan")
+        self.assertIn("пайплайн рядом: Jenkinsfile", job["doc"])
 
     def test_python_still_uses_ast(self):
         self.put("py/app.py", "class A:\n    def run(self):\n        return 1\n")

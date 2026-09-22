@@ -294,6 +294,9 @@ def job_chunks(path: Path, source: str, limit: int) -> list[dict] | None:
         script = JOB_SCRIPT.search(text)
         if script:
             doc.append("скрипт: " + script.group(1))
+        neighbours = sorted(p.name for p in path.parent.glob("*") if is_jenkinsfile(p))
+        if neighbours:
+            doc.append("пайплайн рядом: " + ", ".join(neighbours))
         start = lines_before[idx] + 1
         out.append({
             "symbol": name,
@@ -305,6 +308,41 @@ def job_chunks(path: Path, source: str, limit: int) -> list[dict] | None:
             "text": text[:limit],
         })
     return out
+
+
+# Jenkinsfile до этого размера — одним куском. ~200-250 строк; больше модель
+# всё равно не прочтёт целиком (ответ code_search ограничен бюджетом символов)
+JENKINSFILE_WHOLE = 8000
+
+
+def sibling_job(path: Path) -> str:
+    """Имя джобы из job.groovy в той же папке: jobs/AA/asan/{Jenkinsfile,job.groovy}.
+
+    Так пайплайн находится по имени джобы, а джоба и пайплайн — вместе.
+    """
+    job = path.parent / "job.groovy"
+    try:
+        text = job.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    found = job_chunks(job, text, 100)
+    return found[0]["symbol"] if found else ""
+
+
+def whole_pipeline(path: Path, source: str) -> dict:
+    job = sibling_job(path)
+    summary = pipeline_summary(source, KNOWN_STEPS)
+    doc = "; ".join(p for p in (f"джоба: {job}" if job else "", summary) if p)
+    first = next((line.strip() for line in source.splitlines() if line.strip()), "")
+    return {
+        "symbol": f"{job} / {path.name}" if job else path.name,
+        "kind": "pipeline",
+        "signature": first[:200],
+        "doc": doc,
+        "line_start": 1,
+        "line_end": source.count("\n") + (0 if source.endswith("\n") else 1),
+        "text": source,
+    }
 
 
 def jenkins_step(path: Path) -> str:
@@ -367,6 +405,11 @@ def chunks(path: Path, source: str, limit: int) -> list[dict] | None:
         jobs = job_chunks(path, source, limit)
         if jobs is not None:
             return jobs
+    # Пайплайн читают целиком, как один сценарий: резать на функции и куски
+    # по 120 строк — значит разлучить стадии с тем, что они делают. Длинный
+    # (больше JENKINSFILE_WHOLE) режется как прежде, со сводкой в каждом куске
+    if is_jenkinsfile(path) and len(source) <= JENKINSFILE_WHOLE:
+        return [whole_pipeline(path, source)]
     parser = _parser(*lang)
     if parser is None:
         return None
