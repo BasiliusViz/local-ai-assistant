@@ -235,6 +235,34 @@ def _chunk(node, symbol: str, kind: str, limit: int) -> dict:
     }
 
 
+def jenkins_step(path: Path) -> str:
+    """Имя шага общей библиотеки Jenkins: vars/abActions.groovy -> abActions.
+
+    Jenkins превращает каждый файл vars/*.groovy в глобальный шаг с именем
+    файла: в пайплайне пишут `abActions(...)`, а выполняется `call()` из
+    этого файла. Пусто — файл не из vars/.
+    """
+    if path.suffix == ".groovy" and path.parent.name == "vars":
+        return path.stem
+    return ""
+
+
+def _name_jenkins_step(out: list[dict], step: str) -> None:
+    """call -> abActions, прочие функции файла -> abActions.helper.
+
+    Без этого в индексе десятки одинаковых `call`, а спрашивают люди именем
+    шага, которое видят в пайплайне. Прочие функции Jenkins и вызывает так:
+    `abActions.helper(...)`.
+    """
+    for c in out:
+        if c["kind"] == "text":
+            c["symbol"] = step
+        elif c["symbol"] == "call":
+            c["symbol"] = step
+        elif "." not in c["symbol"]:
+            c["symbol"] = f"{step}.{c['symbol']}"
+
+
 def text_pieces(path: Path, lines: list[str], ranges: list[tuple[int, int]], limit: int) -> list[dict]:
     """Куски по TEXT_STEP строк из указанных диапазонов (0-based, конец не включён)."""
     out = []
@@ -305,7 +333,15 @@ def chunks(path: Path, source: str, limit: int) -> list[dict] | None:
                 walk(child, owner)
 
     walk(tree.root_node, "")
+    out.extend(_uncovered(path, source, out, limit))
 
+    step = jenkins_step(path)
+    if step:
+        _name_jenkins_step(out, step)
+    return out
+
+
+def _uncovered(path: Path, source: str, out: list[dict], limit: int) -> list[dict]:
     # Что функциями не покрыто, не теряем. Для классов на Java это пустяки
     # (импорты), а в Jenkinsfile, bash и groovy-скриптах там почти весь смысл.
     # Порог — половина непустых строк: меньше — отдаём непокрытое текстом
@@ -316,16 +352,16 @@ def chunks(path: Path, source: str, limit: int) -> list[dict] | None:
             covered[i] = True
     meaningful = [i for i, line in enumerate(lines) if line.strip()]
     if not meaningful:
-        return out
+        return []
     share = sum(covered[i] for i in meaningful) / len(meaningful)
-    if share < 0.5:
-        ranges: list[tuple[int, int]] = []
-        start = None
-        for i, is_covered in enumerate(covered + [True]):
-            if not is_covered and start is None:
-                start = i
-            elif is_covered and start is not None:
-                ranges.append((start, i))
-                start = None
-        out.extend(text_pieces(path, lines, ranges, limit))
-    return out
+    if share >= 0.5:
+        return []
+    ranges: list[tuple[int, int]] = []
+    start = None
+    for i, is_covered in enumerate(covered + [True]):
+        if not is_covered and start is None:
+            start = i
+        elif is_covered and start is not None:
+            ranges.append((start, i))
+            start = None
+    return text_pieces(path, lines, ranges, limit)

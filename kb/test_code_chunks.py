@@ -170,6 +170,31 @@ class Languages(unittest.TestCase):
         self.assertIn("helper", {c["symbol"] for c in found})
         self.assertTrue(any("step19" in c["text"] for c in found))
 
+    def test_jenkins_step_is_named_after_file(self):
+        # Параметр без типа — грамматика groovy 0.1.2 спотыкается на строке 1,
+        # но функцию всё равно находит; так выглядит большинство vars/*.groovy
+        code = '''def call(cfg) {
+    helper(cfg)
+    sh "make ${cfg.target}"
+}
+def helper(x) {
+    echo x
+}
+'''
+        found = code_chunks.chunks(Path("lib/vars/abActions.groovy"), code, LIMIT)
+        symbols = {c["symbol"] for c in found}
+        self.assertIn("abActions", symbols)
+        self.assertIn("abActions.helper", symbols)
+        self.assertNotIn("call", symbols)
+
+    def test_groovy_outside_vars_keeps_call(self):
+        code = '''def call(Map cfg) {
+    echo 'x'
+}
+'''
+        found = code_chunks.chunks(Path("src/Deploy.groovy"), code, LIMIT)
+        self.assertIn("call", {c["symbol"] for c in found})
+
     def test_unknown_extension_returns_none(self):
         self.assertIsNone(code_chunks.chunks(Path("x.unknown"), "abc", LIMIT))
 

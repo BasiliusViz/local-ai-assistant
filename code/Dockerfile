@@ -89,6 +89,8 @@ RUN pip install --no-cache-dir \
 
 WORKDIR /app
 COPY sync.sh /app/sync.sh
+# Связи Jenkins, которых Graphify не видит: см. шапку jenkins_graph.py
+COPY jenkins_graph.py test_jenkins_graph.py /app/
 RUN chmod +x /app/sync.sh
 
 # Репозитории и граф лежат в примонтированном томе, а не в образе:

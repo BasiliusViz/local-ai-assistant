@@ -99,4 +99,11 @@ else
 fi
 
 echo
+echo "=== Связи Jenkins ==="
+# Graphify не видит общую библиотеку Jenkins (vars/*.groovy) и не знает, что
+# шаг называется по имени файла. Дописываем связи сами, уже в слитый граф:
+# пайплайн и шаг обычно в разных репозиториях. Сбой здесь не роняет граф
+python /app/jenkins_graph.py --graph "$GRAPH_DIR/graph.json" --repos "$REPOS_DIR"     || echo "    [!] связи Jenkins не добавлены - граф остался без них"
+
+echo
 echo "Готово. Узлов: $(grep -o '"id"' "$GRAPH_DIR/graph.json" | wc -l) (приблизительно)"

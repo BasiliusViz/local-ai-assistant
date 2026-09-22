@@ -792,6 +792,34 @@ Continue подключён к ДВУМ серверам сразу: `knowledge-
 находит место -> инструменты графа показывают, кто это вызывает и что
 сломается.
 
+### Jenkins в графе (`code/jenkins_graph.py`)
+
+Graphify выдавал `vars/abActions.groovy (first error at line 1, no symbols
+extracted)`. Разобрано: (1) `_GROOVY_CONFIG` в graphify/extract.py знает только
+`method_declaration`/`constructor_declaration` — функции верхнего уровня
+(`def call`) не извлекаются ВООБЩЕ, даже без ошибок разбора, молча; (2)
+tree-sitter-groovy 0.1.2 — последняя версия, падает на `def call(cfg)` (параметр
+без типа) и `Map args = [:]`; (3) шаг = имя файла — соглашение Jenkins.
+Внутренний чат пользователя объяснял это «динамикой Groovy» — неточно, это
+синтаксис и настройки Graphify.
+
+Решение без правки Graphify (версия `graphifyy` в образе не закреплена):
+скрипт после `merge-graphs` дописывает в СЛИТЫЙ граф узлы шагов, пайплайнов и
+groovy-классов со `steps.X(...)` и связи `calls` (`_origin: jenkins`, повторный
+прогон заменяет их). В слитый — потому что merge даёт узлам репозитория
+префикс, а пайплайн и шаг в разных репозиториях. Вызовы — регуляркой по
+известным именам шагов после вырезания комментариев и содержимого строк
+(кавычки оставлены: `notifySlack "x"`), не грамматикой. Одноимённые шаги в
+двух библиотеках — `AMBIGUOUS`.
+
+Проверено end-to-end в контейнере: настоящий graphify update + merge-graphs +
+скрипт + второй `graphify.serve` на тестовом графе и MCP-запросы:
+`get_neighbors abActions` показал вызывающих через репозитории со строками.
+**`query_graph` обходит только вперёд** — вызывающих не находит; правило в
+`continue-rules.yaml` направляет модель к `get_neighbors`. Тесты:
+`code/test_jenkins_graph.py` (10). В поиске (`kb/code_chunks.py`) `call` из
+`vars/X.groovy` тоже называется `X`, прочие функции файла — `X.helper`.
+
 ### Все языки, не только Python (`kb/code_chunks.py`)
 
 До этого `code_index` резал на функции только `.py`, остальное (Go, Groovy,
