@@ -6,6 +6,7 @@
 """
 
 import logging
+import os
 from dataclasses import dataclass
 
 from qdrant_client import QdrantClient, models
@@ -66,7 +67,11 @@ class CodeHit:
 # давал лишь "detailed", а модель его почти никогда не просит
 FULL_TOP = 2
 PREVIEW_CHARS = 600
-BUDGET_CHARS = 9000
+# 6000, а не больше: ответ инструмента, правила и описания всех инструментов
+# MCP ложатся в один контекст модели, и при contextLength 8-16K в Continue
+# 9000 символов кода уже давали «message exceeds context limit». С большим
+# контекстом (32K) можно поднять в .env
+BUDGET_CHARS = int(os.getenv("KB_CODE_BUDGET_CHARS", "6000"))
 
 
 def shape(hits: list[CodeHit], detailed: bool) -> list[dict]:

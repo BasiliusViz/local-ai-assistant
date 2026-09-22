@@ -11,6 +11,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from kb import code_chunks, code_index
@@ -322,19 +323,25 @@ class Shape(unittest.TestCase):
 
     def test_top_two_whole_rest_preview(self):
         from kb import code_retriever as cr
-        out = cr.shape(self.hits([4000, 3000, 2000, 2000]), detailed=False)
+        with mock.patch.object(cr, "BUDGET_CHARS", 9000):
+            out = cr.shape(self.hits([4000, 3000, 2000, 2000]), detailed=False)
         self.assertEqual([len(o.get("code", "")) for o in out], [4000, 3000, 600, 600])
         self.assertNotIn("truncated", out[0])
         self.assertTrue(out[2]["truncated"])
 
     def test_budget_is_respected(self):
         from kb import code_retriever as cr
-        out = cr.shape(self.hits([4000] * 8), detailed=False)
-        total = sum(len(o.get("code", "")) for o in out)
-        self.assertLessEqual(total, cr.BUDGET_CHARS)
-        self.assertEqual(len(out[0]["code"]), 4000)
-        self.assertEqual(len(out[1]["code"]), 4000)
-        self.assertTrue(all("location" in o for o in out), "адрес есть всегда")
+        for budget in (6000, 9000, 12000):
+            with self.subTest(budget=budget), mock.patch.object(cr, "BUDGET_CHARS", budget):
+                out = cr.shape(self.hits([4000] * 8), detailed=False)
+                total = sum(len(o.get("code", "")) for o in out)
+                self.assertLessEqual(total, budget)
+                self.assertEqual(len(out[0]["code"]), 4000, "лучший — целиком")
+                self.assertTrue(all("location" in o for o in out), "адрес есть всегда")
+
+    def test_default_budget_fits_16k_context(self):
+        from kb import code_retriever as cr
+        self.assertLessEqual(cr.BUDGET_CHARS, 6000)
 
     def test_detailed_is_whole(self):
         from kb import code_retriever as cr
