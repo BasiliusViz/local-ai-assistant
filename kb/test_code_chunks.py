@@ -164,6 +164,15 @@ class Languages(unittest.TestCase):
         found = code_chunks.chunks(Path("Jenkinsfile"), code, LIMIT)
         self.assertTrue(any("make deploy" in c["text"] for c in found))
 
+    def test_jenkinsfile_name_variants(self):
+        code = "pipeline {\n  stages { stage('d') { steps { sh 'make deploy' } } }\n}\n"
+        for name in ("Jenkinsfile", "Jenkinsfile.deploy", "Jenkinsfile-prod",
+                     "ci/deploy.jenkinsfile", "release.Jenkinsfile"):
+            with self.subTest(name=name):
+                found = code_chunks.chunks(Path(name), code, LIMIT)
+                self.assertIsNotNone(found, name)
+                self.assertTrue(any("make deploy" in c["text"] for c in found))
+
     def test_script_with_functions_keeps_the_rest(self):
         code = "#!/bin/bash\nhelper() { echo; }\n" + "".join(f"echo step{i}\n" for i in range(20))
         found = code_chunks.chunks(Path("run.sh"), code, LIMIT)

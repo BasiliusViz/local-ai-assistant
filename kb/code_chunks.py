@@ -130,7 +130,19 @@ CONTAINER_CHARS = 1500
 TEXT_STEP = 120
 
 
+def is_jenkinsfile(path: Path) -> bool:
+    """Jenkinsfile, Jenkinsfile.deploy, Jenkinsfile-prod, deploy.jenkinsfile.
+
+    Точное имя «Jenkinsfile» — лишь один из вариантов. Остальные по
+    расширению (.deploy, .prod) ни на что не похожи и молча выпадали из
+    индекса — так на живых репозиториях не нашлось ни одного пайплайна
+    """
+    return path.name.startswith("Jenkinsfile") or path.name.lower().endswith(".jenkinsfile")
+
+
 def language_for(path: Path) -> tuple[str, str] | None:
+    if is_jenkinsfile(path):
+        return ("groovy", "language")
     return NAMED_FILES.get(path.name) or LANGUAGES.get(path.suffix.lower())
 
 
