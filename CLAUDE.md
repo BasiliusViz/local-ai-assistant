@@ -819,6 +819,12 @@ groovy-классов со `steps.X(...)` и связи `calls` (`_origin: jenki
 `continue-rules.yaml` направляет модель к `get_neighbors`. Тесты:
 `code/test_jenkins_graph.py` (10). В поиске (`kb/code_chunks.py`) `call` из
 `vars/X.groovy` тоже называется `X`, прочие функции файла — `X.helper`.
+**Job DSL** (`jobs/**/job.groovy`, у пользователя их 813): функций нет, режутся
+по джобам — `pipelineJob('AA/x')` целиком одним чанком `kind=job`, в doc —
+description, имена параметров и scriptPath (спрашивают «какие параметры у
+сборки X»). Имя из переменных -> путь каталога после `jobs/`. `repoUrl` в их
+файлах не задан (приходит снаружи), поэтому джобы в граф НЕ связываются —
+пользователь сказал не заморачиваться.
 
 ### Все языки, не только Python (`kb/code_chunks.py`)
 

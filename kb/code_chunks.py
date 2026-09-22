@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -235,6 +236,65 @@ def _chunk(node, symbol: str, kind: str, limit: int) -> dict:
     }
 
 
+# Job DSL: описание джобы Jenkins. Функций там нет — только вызовы DSL, поэтому
+# режется не по функциям, а по джобам: одна джоба — один чанк целиком
+JOB_DSL = re.compile(
+    r"^[ \t]*(pipelineJob|multibranchPipelineJob|freeStyleJob|matrixJob|job|folder)"
+    r"\s*\(\s*(?P<q>['\"])(?P<name>.*?)(?P=q)",
+    re.M,
+)
+JOB_PARAMS = re.compile(
+    r"\b(?:string|boolean|choice|text|password|file|credentials|run|label|node|"
+    r"activeChoice|activeChoiceReactive|validatingString|git)Param\w*\s*\(\s*"
+    r"(?:name\s*:\s*)?['\"]([^'\"]+)['\"]"
+)
+JOB_DESCRIPTION = re.compile(r"\bdescription\s*\(?\s*(['\"]{1,3})(.*?)\1", re.S)
+JOB_SCRIPT = re.compile(r"\bscriptPath\s*\(?\s*['\"]([^'\"]+)['\"]")
+
+
+def job_chunks(path: Path, source: str, limit: int) -> list[dict] | None:
+    """Джобы из файла Job DSL. None — в файле нет ни одной джобы.
+
+    Имя — из pipelineJob('AA/access-server'); если собрано из переменных
+    (${...}), берётся путь к каталогу файла: jobs/AA/access-server/job.groovy
+    -> AA/access-server. В doc — описание, параметры и scriptPath: по ним и
+    спрашивают («какие параметры у сборки X», «какая джоба с DEPLOY»).
+    """
+    found = [m for m in JOB_DSL.finditer(source) if m.group(1) != "folder"]
+    if not found:
+        return None
+    lines_before = [source.count("\n", 0, m.start()) for m in found]
+    out = []
+    for idx, m in enumerate(found):
+        end = found[idx + 1].start() if idx + 1 < len(found) else len(source)
+        text = source[m.start() : end].rstrip()
+        name = m.group("name")
+        if "$" in name or not name.strip():
+            parts = path.parent.parts
+            name = "/".join(parts[parts.index("jobs") + 1 :]) if "jobs" in parts else path.parent.name
+        params = list(dict.fromkeys(JOB_PARAMS.findall(text)))
+        doc = []
+        desc = JOB_DESCRIPTION.search(text)
+        if desc:
+            doc.append(" ".join(desc.group(2).split())[:200])
+        if params:
+            doc.append("параметры: " + ", ".join(params))
+        script = JOB_SCRIPT.search(text)
+        if script:
+            doc.append("скрипт: " + script.group(1))
+        start = lines_before[idx] + 1
+        out.append({
+            "symbol": name,
+            "kind": "job",
+            "signature": text.splitlines()[0].split("{")[0].strip()[:200],
+            "doc": "; ".join(doc)[:300],
+            "line_start": start,
+            "line_end": start + text.count("\n"),
+            "text": text[:limit],
+        })
+    return out
+
+
 def jenkins_step(path: Path) -> str:
     """Имя шага общей библиотеки Jenkins: vars/abActions.groovy -> abActions.
 
@@ -289,6 +349,12 @@ def chunks(path: Path, source: str, limit: int) -> list[dict] | None:
     lang = language_for(path)
     if lang is None:
         return None
+    # Описание джоб Jenkins: функций нет, режем по джобам. vars/ — это шаги,
+    # у них свои правила ниже
+    if path.suffix == ".groovy" and not jenkins_step(path):
+        jobs = job_chunks(path, source, limit)
+        if jobs is not None:
+            return jobs
     parser = _parser(*lang)
     if parser is None:
         return None

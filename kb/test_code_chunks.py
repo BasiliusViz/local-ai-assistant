@@ -187,6 +187,53 @@ def helper(x) {
         self.assertIn("abActions.helper", symbols)
         self.assertNotIn("call", symbols)
 
+    def test_job_dsl_is_one_chunk_per_job(self):
+        code = '''pipelineJob('AA/access-server-repository') {
+    description('Сборка access-server')
+    parameters {
+        stringParam('BRANCH', 'master', 'Ветка')
+        booleanParam('DEPLOY', false, 'Деплоить после сборки')
+    }
+    definition {
+        cpsScm {
+            scm {
+                git {
+                    remote {
+                        url(repoUrl)
+                        credentials('jenkins-gitflic')
+                    }
+                    branch('${BRANCH}')
+                }
+            }
+            scriptPath('Jenkinsfile')
+        }
+    }
+}
+'''
+        path = Path("jobs/AA/access-server-repository/job.groovy")
+        found = code_chunks.chunks(path, code, LIMIT)
+        self.assertEqual(len(found), 1)
+        job = found[0]
+        self.assertEqual(job["symbol"], "AA/access-server-repository")
+        self.assertEqual(job["kind"], "job")
+        self.assertEqual((job["line_start"], job["line_end"]), (1, 21))
+        self.assertIn("Сборка access-server", job["doc"])
+        self.assertIn("параметры: BRANCH, DEPLOY", job["doc"])
+        self.assertIn("скрипт: Jenkinsfile", job["doc"])
+        self.assertIn("credentials('jenkins-gitflic')", job["text"])
+
+    def test_job_dsl_name_from_variables_uses_folder(self):
+        code = 'pipelineJob("${folder}/${name}") {\n    description("x")\n}\n'
+        found = code_chunks.chunks(Path("repo/jobs/AA/installer/job.groovy"), code, LIMIT)
+        self.assertEqual(found[0]["symbol"], "AA/installer")
+
+    def test_job_dsl_two_jobs_in_file(self):
+        code = "folder('AA')\npipelineJob('AA/a') {\n}\npipelineJob('AA/b') {\n  stringParam('X', '', '')\n}\n"
+        found = code_chunks.chunks(Path("jobs/AA/job.groovy"), code, LIMIT)
+        self.assertEqual([c["symbol"] for c in found], ["AA/a", "AA/b"])
+        self.assertEqual(found[1]["line_start"], 4)
+        self.assertIn("параметры: X", found[1]["doc"])
+
     def test_groovy_outside_vars_keeps_call(self):
         code = '''def call(Map cfg) {
     echo 'x'
