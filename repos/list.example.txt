@@ -1,0 +1,18 @@
+# Репозитории для repos/sync.py — по адресу на строку.
+#
+# Скопировать в repos/list.txt и в .env указать:
+#   CODE_GIT_REPOS_FILE=repos/list.txt
+#
+# Адрес — из «Клонировать -> HTTPS», но БЕЗ логина и токена: они в .env.
+# Ветка — после @, без неё берётся основная.
+# # в начале строки или после пробела — комментарий.
+
+# --- Bitbucket
+https://bitbucket.company.local/scm/PROJ/billing.git
+https://bitbucket.company.local/scm/PROJ/payments.git@develop   # пока живём на develop
+
+# --- GitFlic
+https://gitflic.company.local/project/team/service-a.git
+
+# Временно выключен:
+# https://bitbucket.company.local/scm/PROJ/legacy.git

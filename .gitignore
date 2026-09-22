@@ -18,6 +18,8 @@ confluence/pages/
 confluence/.sync_state.json
 # Выгрузка Jira: там имена людей и содержимое задач, в репозитории им не место
 jira/issues/
+# Список репозиториев у каждого сервера свой; в git — только образец
+repos/list.txt
 graphify-out/
 
 # Служебное

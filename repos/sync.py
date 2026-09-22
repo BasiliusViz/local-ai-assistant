@@ -19,7 +19,9 @@
 Настройки — в .env в корне проекта:
 
     CODE_DIR          куда класть репозитории: /srv/all_git
-    CODE_GIT_REPOS    адреса через запятую или пробел, ветка после @:
+    CODE_GIT_REPOS_FILE  файл со списком, адрес на строку (удобнее всего):
+                      repos/list.txt — образец в repos/list.example.txt
+    CODE_GIT_REPOS    либо адреса прямо в .env, в ОДНУ строку через запятую:
                       https://bitbucket.company.local/scm/PROJ/billing.git@develop
     BITBUCKET_URL     https://bitbucket.company.local
     BITBUCKET_USER    логин
@@ -105,13 +107,27 @@ class Repo:
 # ---------------------------------------------------------------- настройки
 
 
-def load_env() -> None:
-    """Читает .env проекта. Заданные переменные окружения важнее файла."""
+def load_env() -> list[str]:
+    """Читает .env проекта. Заданные переменные окружения важнее файла.
+
+    Возвращает предупреждения о строках, похожих на адреса без ключа: так
+    выглядит список репозиториев, разнесённый в .env по строкам. Такие строки
+    иначе пропали бы молча, а скрипт работал бы с первой строкой списка.
+    """
+    warnings = []
     for env_file in (HERE / ".env", HERE.parent / ".env"):
         if not env_file.exists():
             continue
-        for line in env_file.read_text(encoding="utf-8").splitlines():
+        for number, line in enumerate(env_file.read_text(encoding="utf-8").splitlines(), 1):
             line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line and (re.match(r"(https?|file)://", line) or line.endswith(".git")):
+                warnings.append(
+                    f"{env_file.name}, строка {number}: адрес без ключа — не прочитан. "
+                    "Список в .env пишется в одну строку; по строкам — в CODE_GIT_REPOS_FILE"
+                )
+                continue
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
@@ -121,6 +137,37 @@ def load_env() -> None:
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
                 value = value[1:-1]
             os.environ.setdefault(key.strip(), value)
+    return warnings
+
+
+def read_list_file(path: Path) -> str:
+    """Файл со списком: адрес на строку, # — комментарий, пустые строки можно.
+
+    Комментарий в конце строки отделяется пробелом: `адрес  # что это`.
+    """
+    if not path.is_file():
+        raise SyncError(f"файла со списком нет: {path}")
+    entries = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = re.split(r"(?:^|\s)#", line, maxsplit=1)[0].strip()
+        if line:
+            entries.append(line)
+    return "\n".join(entries)
+
+
+def repo_list(env: Mapping[str, str] | None = None) -> str:
+    """Список из обоих мест: CODE_GIT_REPOS_FILE и CODE_GIT_REPOS."""
+    source: Mapping[str, str] = os.environ if env is None else env
+    parts = [source.get("CODE_GIT_REPOS", "")]
+    name = source.get("CODE_GIT_REPOS_FILE", "").strip()
+    if name:
+        path = Path(name).expanduser()
+        # Относительный путь — от корня проекта, а не от текущего каталога:
+        # скрипт запускают откуда угодно, в том числе из планировщика
+        if not path.is_absolute():
+            path = HERE.parent / path
+        parts.append(read_list_file(path))
+    return "\n".join(parts)
 
 
 def load_providers(env: Mapping[str, str] | None = None) -> list[Provider]:
@@ -489,23 +536,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-v", "--verbose", action="store_true", help="печатать вывод git целиком")
     args = ap.parse_args(argv)
 
-    load_env()
+    env_warnings = load_env()
     providers = load_providers()
     root = Path(os.environ.get("CODE_DIR", "")).expanduser()
     cainfo = os.environ.get("CODE_GIT_CAINFO", "").strip()
 
     print("Настройки:")
     problems = settings_report(providers, root, cainfo)
+    for w in env_warnings:
+        print(f"  [!] {w}")
+        problems += 1
 
     try:
-        repos = parse_list(os.environ.get("CODE_GIT_REPOS", ""), providers)
+        repos = parse_list(repo_list(), providers)
     except SyncError as e:
-        print(f"\n[!] CODE_GIT_REPOS: {e}")
+        print(f"\n[!] Список репозиториев: {e}")
         return 1
     if args.only:
         repos = [r for r in repos if args.only.lower() in r.dirname.lower()]
     if not repos:
-        print("\nРепозиториев нет: заполните CODE_GIT_REPOS в .env" +
+        print("\nРепозиториев нет: заполните CODE_GIT_REPOS_FILE или CODE_GIT_REPOS в .env" +
               (f" (или --only {args.only} ничего не выбрал)" if args.only else ""))
         return 1
     for r in repos:

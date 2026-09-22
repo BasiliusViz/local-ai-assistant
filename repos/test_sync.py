@@ -78,6 +78,70 @@ class EnvFile(unittest.TestCase):
         self.assertEqual(ps[0].token, NASTY_TOKEN)
 
 
+class ListFile(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / "repos").mkdir()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_comments_blank_lines_and_inline_comments(self):
+        f = self.tmp / "list.txt"
+        f.write_text(
+            "# шапка\n"
+            "\n"
+            "https://bb.local/scm/P/a.git\n"
+            "   https://bb.local/scm/P/b.git@develop   # платёжка\n"
+            "# https://bb.local/scm/P/off.git\n"
+            "\t\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            sync.read_list_file(f).splitlines(),
+            ["https://bb.local/scm/P/a.git", "https://bb.local/scm/P/b.git@develop"],
+        )
+
+    def test_relative_path_from_project_root_and_merge_with_env(self):
+        (self.tmp / "repos" / "list.txt").write_text("https://bb.local/scm/P/a.git\n", encoding="utf-8")
+        env = {"CODE_GIT_REPOS_FILE": "repos/list.txt", "CODE_GIT_REPOS": "https://bb.local/scm/P/b.git"}
+        with mock.patch.object(sync, "HERE", self.tmp / "repos"):
+            repos = sync.parse_list(sync.repo_list(env), [provider(url="https://bb.local")])
+        self.assertEqual(sorted(r.dirname for r in repos), ["bitbucket-P-a", "bitbucket-P-b"])
+
+    def test_missing_file_is_error(self):
+        with mock.patch.object(sync, "HERE", self.tmp / "repos"), \
+             self.assertRaises(sync.SyncError) as cm:
+            sync.repo_list({"CODE_GIT_REPOS_FILE": "repos/nope.txt"})
+        self.assertIn("nope.txt", str(cm.exception))
+
+    def test_multiline_list_in_env_is_reported(self):
+        (self.tmp / ".env").write_text(
+            "CODE_GIT_REPOS=https://bb.local/scm/P/a.git,\n"
+            "https://bb.local/scm/P/b.git\n"
+            "  https://bb.local/scm/P/c.git@dev\n"
+            "OTHER=1\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(sync, "HERE", self.tmp / "repos"), \
+             mock.patch.dict(os.environ, {}, clear=True):
+            warnings = sync.load_env()
+            self.assertEqual(os.environ["OTHER"], "1")
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("строка 2", warnings[0])
+        self.assertIn("CODE_GIT_REPOS_FILE", warnings[0])
+
+    def test_normal_env_has_no_warnings(self):
+        (self.tmp / ".env").write_text(
+            "# https://example.com в комментарии — не адрес\n"
+            # эта строка есть в старом .env.example — ложная тревога у всех
+            "#   https://oauth2:ТОКЕН@git.company.local/team/service.git\n"
+            "BITBUCKET_URL=https://bb.local\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(sync, "HERE", self.tmp / "repos"), \
+             mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(sync.load_env(), [])
+
+
 class Parsing(unittest.TestCase):
     def setUp(self):
         self.ps = [
@@ -252,7 +316,7 @@ class RealGit(unittest.TestCase):
         }
         out = io.StringIO()
         with mock.patch.dict(os.environ, env, clear=True), \
-             mock.patch.object(sync, "load_env", lambda: None), \
+             mock.patch.object(sync, "load_env", lambda: []), \
              contextlib.redirect_stdout(out):
             code = sync.main(list(args))
         return code, out.getvalue()
@@ -432,7 +496,7 @@ class HttpAuth(unittest.TestCase):
             env[f"{p.name}_TOKEN"] = p.token
         out = io.StringIO()
         with mock.patch.dict(os.environ, env, clear=True), \
-             mock.patch.object(sync, "load_env", lambda: None), \
+             mock.patch.object(sync, "load_env", lambda: []), \
              contextlib.redirect_stdout(out):
             code = sync.main(["--check"])
         shutil.rmtree(env["CODE_DIR"], ignore_errors=True)

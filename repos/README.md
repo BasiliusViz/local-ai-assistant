@@ -11,7 +11,7 @@
 
 ```ini
 CODE_DIR=/srv/all_git
-CODE_GIT_REPOS=https://bitbucket.company.local/scm/PROJ/billing.git@develop,https://gitflic.company.local/project/team/service-a.git
+CODE_GIT_REPOS_FILE=repos/list.txt
 
 BITBUCKET_URL=https://bitbucket.company.local
 BITBUCKET_USER=svc-local-ai
@@ -22,9 +22,26 @@ GITFLIC_USER=svc-local-ai
 GITFLIC_TOKEN='...'
 ```
 
+Список репозиториев — в `repos/list.txt`, по адресу на строку:
+
+```bash
+cp repos/list.example.txt repos/list.txt
+nano repos/list.txt
+```
+
+```
+https://bitbucket.company.local/scm/PROJ/billing.git
+https://bitbucket.company.local/scm/PROJ/payments.git@develop   # комментарий
+# https://bitbucket.company.local/scm/PROJ/legacy.git          <- выключен
+```
+
 - Адреса — те же, что дают кнопки «Клонировать → HTTPS», но **без логина и
   токена** в адресе. Скрипт сам подставит токен по хосту
 - `@ветка` в конце необязательна, без неё берётся основная ветка
+- `repos/list.txt` в git не попадает (у каждого сервера свой) — `git pull`
+  его не тронет. Путь относительный от корня проекта, можно и абсолютный
+- Вместо файла можно `CODE_GIT_REPOS=...` в `.env`, но только **в одну
+  строку** через запятую. Можно и то и другое — списки сложатся
 - Токен — **в одинарных кавычках**. Экранировать внутри ничего не нужно,
   кроме одного случая: если в самом токене есть одинарная кавычка, его проще
   перевыпустить
@@ -68,6 +85,8 @@ python3 repos/sync.py               # клонировать и обновить
 | каталог есть, но это не git-репозиторий | в `CODE_DIR` уже лежит папка с таким именем — скрипт её не трогает |
 | в каталоге другой репозиторий | то же, но там клон другого адреса |
 | нужен git 2.31 или новее | обновить git на сервере |
+| адрес без ключа — не прочитан | список в `.env` разнесён по строкам; перенести в `repos/list.txt` |
+| файла со списком нет | проверить `CODE_GIT_REPOS_FILE`; относительный путь — от корня проекта |
 
 ## Как передаётся токен
 
