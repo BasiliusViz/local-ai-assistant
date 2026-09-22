@@ -197,6 +197,17 @@ def _text_chunks(path: Path, source: str) -> list[dict]:
     return out
 
 
+def find_jenkins_steps(repo_dirs: list[Path]) -> set[str]:
+    """Имена шагов: vars/abActions.groovy -> abActions, во всех репозиториях."""
+    steps = set()
+    for repo_dir in repo_dirs:
+        for dirpath, dirnames, filenames in os.walk(repo_dir, onerror=lambda e: None):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            if Path(dirpath).name == "vars":
+                steps.update(Path(f).stem for f in filenames if f.endswith(".groovy"))
+    return steps
+
+
 def collect(root: Path) -> list[dict]:
     """Все чанки всех репозиториев внутри root.
 
@@ -216,6 +227,11 @@ def collect(root: Path) -> list[dict]:
         p for p in root.iterdir()
         if p.is_dir() and not p.name.startswith(".") and p.name != "graph"
     ]
+    # Шаги общей библиотеки Jenkins — до обхода: пайплайн проекта может
+    # оказаться раньше библиотеки, а его сводке нужны имена всех шагов
+    code_chunks.KNOWN_STEPS = find_jenkins_steps(repo_dirs)
+    if code_chunks.KNOWN_STEPS:
+        print(f"Шагов общей библиотеки Jenkins: {len(code_chunks.KNOWN_STEPS)}")
     for repo_dir in sorted(repo_dirs):
         repo = repo_dir.name
         seen = taken = by_name = generated = 0

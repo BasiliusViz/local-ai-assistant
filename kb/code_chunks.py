@@ -416,7 +416,69 @@ def chunks(path: Path, source: str, limit: int) -> list[dict] | None:
     step = jenkins_step(path)
     if step:
         _name_jenkins_step(out, step)
+    if is_jenkinsfile(path):
+        summary = pipeline_summary(source, KNOWN_STEPS)
+        if summary:
+            for c in out:
+                c["doc"] = f"{summary}; {c['doc']}" if c["doc"] else summary
     return out
+
+
+# Имена шагов общей библиотеки (vars/*.groovy во всех репозиториях).
+# Заполняет code_index.collect перед обходом: Jenkinsfile проекта и шаг
+# библиотеки лежат в разных репозиториях, по одному файлу шаг не опознать
+KNOWN_STEPS: set[str] = set()
+
+PIPELINE_STAGE = re.compile(r"\bstage\s*\(\s*['\"]([^'\"]+)['\"]")
+PIPELINE_LIBRARY = re.compile(r"@Library\s*\(\s*\[?([^)\]]*)")
+PIPELINE_AGENT = re.compile(r"\b(?:label|node)\s*\(?\s*['\"]([^'\"]+)['\"]")
+PIPELINE_DOCKER = re.compile(r"\bimage\s*\(?\s*['\"]([^'\"]+)['\"]")
+PIPELINE_CRON = re.compile(r"\b(?:cron|pollSCM)\s*\(\s*['\"]([^'\"]+)['\"]")
+PIPELINE_UPSTREAM = re.compile(r"\bupstream\s*\(\s*(?:upstreamProjects\s*:\s*)?['\"]([^'\"]+)['\"]")
+LINE_COMMENT = re.compile(r"(?m)^\s*//.*$")
+
+
+def _unique(items) -> list[str]:
+    return list(dict.fromkeys(i.strip() for i in items if i.strip()))
+
+
+def pipeline_summary(source: str, steps: set[str]) -> str:
+    """Сводка пайплайна для шапки: стадии, шаги библиотеки, агент, триггеры.
+
+    Jenkinsfile-ы похожи друг на друга (pipeline, stages, те же шаги), и без
+    сводки у фрагмента шапка «…/Jenkinsfile :: Jenkinsfile» — поиск находил
+    пайплайн, только если в вопросе назван проект. Со сводкой «где деплой в
+    прод» цепляется за стадию Deploy to prod, «кто бампает компоненты» — за
+    шаг abBumpComponents.
+    """
+    text = LINE_COMMENT.sub("", source)
+    parts = []
+    stages = _unique(PIPELINE_STAGE.findall(text))
+    if stages:
+        parts.append("стадии: " + ", ".join(stages))
+    if steps:
+        called = [
+            name for name in sorted(steps)
+            if re.search(rf"(?<![\w.$]){re.escape(name)}\s*(?:\(|\{{|\.\w+\s*\(|[ \t]+[\w\"'\[])", text)
+        ]
+        if called:
+            parts.append("шаги библиотеки: " + ", ".join(called))
+    libraries = []
+    for group in PIPELINE_LIBRARY.findall(text):
+        libraries += [lib.split("@")[0] for lib in re.findall(r"['\"]([^'\"]+)['\"]", group)]
+    if libraries:
+        parts.append("библиотеки: " + ", ".join(_unique(libraries)))
+    agents = _unique(PIPELINE_AGENT.findall(text) + PIPELINE_DOCKER.findall(text))
+    if agents:
+        parts.append("агент: " + ", ".join(agents[:5]))
+    params = _unique(JOB_PARAMS.findall(text))
+    if params:
+        parts.append("параметры: " + ", ".join(params))
+    triggers = [f"cron {c}" for c in _unique(PIPELINE_CRON.findall(text))]
+    triggers += [f"после {u}" for u in _unique(PIPELINE_UPSTREAM.findall(text))]
+    if triggers:
+        parts.append("триггеры: " + ", ".join(triggers))
+    return ("пайплайн; " + "; ".join(parts))[:600] if parts else ""
 
 
 def _uncovered(path: Path, source: str, out: list[dict], limit: int) -> list[dict]:
@@ -432,7 +494,10 @@ def _uncovered(path: Path, source: str, out: list[dict], limit: int) -> list[dic
     if not meaningful:
         return []
     share = sum(covered[i] for i in meaningful) / len(meaningful)
-    if share >= 0.5:
+    # У Jenkinsfile главное — сам pipeline { stages }, а он функцией не
+    # считается. Порог здесь не годится: большая вспомогательная def занимала
+    # больше половины файла, и пайплайн в индекс не попадал вовсе
+    if share >= 0.5 and not is_jenkinsfile(path):
         return []
     ranges: list[tuple[int, int]] = []
     start = None

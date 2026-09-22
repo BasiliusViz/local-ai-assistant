@@ -173,6 +173,44 @@ class Languages(unittest.TestCase):
                 self.assertIsNotNone(found, name)
                 self.assertTrue(any("make deploy" in c["text"] for c in found))
 
+    def test_pipeline_block_kept_despite_big_helper(self):
+        helper = "".join(f"    env.V{i} = 'x'\n" for i in range(200))
+        code = f"def prepare() {{\n{helper}}}\npipeline {{\n  stages {{ stage('Deploy to prod') {{ steps {{ sh 'go' }} }} }}\n}}\n"
+        found = code_chunks.chunks(Path("Jenkinsfile"), code, LIMIT)
+        self.assertIn("prepare", {c["symbol"] for c in found})
+        self.assertTrue(any("Deploy to prod" in c["text"] for c in found), "пайплайн потерялся")
+
+    def test_pipeline_summary_in_doc(self):
+        code = '''@Library(['adpc-jenkins-shared-libs@master', 'common']) _
+pipeline {
+    agent { label 'docker-builder' }
+    parameters { booleanParam(name: 'DEPLOY', defaultValue: false) }
+    triggers { cron('H 2 * * *') }
+    stages {
+        stage('Build') { steps { abActions action: 'build' } }
+        stage('Bump') { steps { abBumpComponents() } }
+        // stage('Old') { steps { oldStep() } }
+        stage('Deploy to prod') { steps { sh 'make deploy' } }
+    }
+}
+'''
+        old = code_chunks.KNOWN_STEPS
+        code_chunks.KNOWN_STEPS = {"abActions", "abBumpComponents", "oldStep", "unused"}
+        try:
+            found = code_chunks.chunks(Path("Jenkinsfile.deploy"), code, LIMIT)
+        finally:
+            code_chunks.KNOWN_STEPS = old
+        doc = found[0]["doc"]
+        self.assertTrue(all(c["doc"] == doc for c in found))
+        self.assertIn("стадии: Build, Bump, Deploy to prod", doc)
+        self.assertIn("шаги библиотеки: abActions, abBumpComponents", doc)
+        self.assertNotIn("oldStep", doc)  # закомментирован
+        self.assertNotIn("unused", doc)
+        self.assertIn("библиотеки: adpc-jenkins-shared-libs, common", doc)
+        self.assertIn("агент: docker-builder", doc)
+        self.assertIn("параметры: DEPLOY", doc)
+        self.assertIn("триггеры: cron H 2 * * *", doc)
+
     def test_script_with_functions_keeps_the_rest(self):
         code = "#!/bin/bash\nhelper() { echo; }\n" + "".join(f"echo step{i}\n" for i in range(20))
         found = code_chunks.chunks(Path("run.sh"), code, LIMIT)
@@ -309,6 +347,16 @@ class Collect(unittest.TestCase):
         symbols = {c["symbol"] for c in items}
         self.assertIn("Server.Start", symbols)
         self.assertIn("Payment.charge", symbols)
+
+    def test_pipeline_sees_steps_from_another_repo(self):
+        # Шаг — в библиотеке, пайплайн — в проекте, и проект идёт раньше по алфавиту
+        self.put("a-app/Jenkinsfile", "pipeline { stages { stage('B') { steps { abActions() } } } }\n")
+        self.put("z-lib/vars/abActions.groovy", "def call() { echo 'x' }\n")
+        items = code_index.collect(self.root)
+        pipeline = [c for c in items if c["repo"] == "a-app"]
+        self.assertTrue(pipeline)
+        self.assertIn("шаги библиотеки: abActions", pipeline[0]["doc"])
+        self.assertIn("стадии: B", pipeline[0]["doc"])
 
     def test_python_still_uses_ast(self):
         self.put("py/app.py", "class A:\n    def run(self):\n        return 1\n")
