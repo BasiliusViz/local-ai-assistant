@@ -22,8 +22,10 @@ TOKEN = "test-token"
 SPACES_FORBIDDEN = False
 
 SPACES = [
-    {"key": "DEV", "name": "Разработка"},
-    {"key": "OPS", "name": "Эксплуатация"},
+    {"key": "DEV", "name": "Разработка", "type": "global"},
+    {"key": "OPS", "name": "Эксплуатация", "type": "global"},
+    # Личное пространство: в режиме «все пространства» его брать не надо
+    {"key": "~ivanov", "name": "Иван Иванов", "type": "personal"},
 ]
 
 # storage-формат Confluence: XHTML со своими тегами ac: и ri:
@@ -103,6 +105,43 @@ PAGES = [
 ]
 
 
+PAGES += [
+    {
+        "id": "1005",
+        "space": "OPS",
+        "title": "Архив",
+        "updated": "2025-01-10T10:00:00.000+03:00",
+        # Раздел, который обычно исключают: CONFLUENCE_EXCLUDE=1005
+        "body": "<p>Устаревшие регламенты.</p>",
+    },
+    {
+        "id": "1006",
+        "space": "OPS",
+        "title": "Старый регламент выкатки",
+        "updated": "2024-05-01T10:00:00.000+03:00",
+        "parent": "1005",
+        "body": "<p>Выкатка по пятницам вечером.</p>",
+    },
+    {
+        "id": "2001",
+        "space": "~ivanov",
+        "title": "Мои заметки",
+        "updated": "2026-08-10T10:00:00.000+03:00",
+        "body": "<p>Личное.</p>",
+    },
+]
+
+
+def ancestors_of(page: dict) -> list[dict]:
+    """Цепочка родителей от корня, как expand=ancestors в Confluence."""
+    chain, parent = [], page.get("parent")
+    by_id = {p["id"]: p for p in PAGES}
+    while parent:
+        chain.insert(0, {"id": parent, "title": by_id[parent]["title"]})
+        parent = by_id[parent].get("parent")
+    return chain
+
+
 def descendants_of(root_id: str) -> list[dict]:
     """Все потомки на любой глубине — как CQL ancestor в настоящем Confluence."""
     out, frontier = [], [root_id]
@@ -115,7 +154,7 @@ def descendants_of(root_id: str) -> list[dict]:
     return out
 
 
-def page_json(page: dict, with_body: bool) -> dict:
+def page_json(page: dict, with_body: bool, with_ancestors: bool = True) -> dict:
     out = {
         "id": page["id"],
         "type": "page",
@@ -124,6 +163,8 @@ def page_json(page: dict, with_body: bool) -> dict:
         "version": {"number": 3, "when": page["updated"]},
         "_links": {"webui": f"/spaces/{page['space']}/pages/{page['id']}"},
     }
+    if with_ancestors:
+        out["ancestors"] = ancestors_of(page)
     if with_body:
         out["body"] = {"storage": {"value": page["body"], "representation": "storage"}}
     return out
@@ -155,7 +196,30 @@ class Handler(BaseHTTPRequestHandler):
             if SPACES_FORBIDDEN:
                 self._send(403, {"message": "Forbidden"})
                 return
-            self._send(200, {"results": [{"key": s["key"], "name": s["name"]} for s in SPACES], "size": len(SPACES)})
+            kind = query.get("type", [None])[0]
+            start = int(query.get("start", ["0"])[0])
+            limit = int(query.get("limit", ["25"])[0])
+            items = [s for s in SPACES if not kind or s["type"] == kind]
+            window = items[start : start + limit]
+            self._send(200, {
+                "results": [
+                    {"key": s["key"], "name": s["name"], "type": s["type"]} for s in window
+                ],
+                "start": start,
+                "limit": limit,
+                "size": len(window),
+            })
+            return
+
+        # одно пространство по ключу. Настоящий Confluence отвечает 404 и на
+        # несуществующее, и на закрытое для токена — различить их нельзя
+        m = re.match(r"^/rest/api/space/([^/]+)$", url.path)
+        if m:
+            for s in SPACES:
+                if s["key"] == m.group(1):
+                    self._send(200, {"key": s["key"], "name": s["name"], "type": s["type"]})
+                    return
+            self._send(404, {"message": "No space with key"})
             return
 
         # поиск по CQL: нас интересует только ancestor=<id>

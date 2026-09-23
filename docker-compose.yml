@@ -72,6 +72,8 @@ services:
       - CONFLUENCE_URL=${CONFLUENCE_URL:-}
       - CONFLUENCE_TOKEN=${CONFLUENCE_TOKEN:-}
       - CONFLUENCE_PAGES=${CONFLUENCE_PAGES:-}
+      - CONFLUENCE_SPACES=${CONFLUENCE_SPACES:-}
+      - CONFLUENCE_EXCLUDE=${CONFLUENCE_EXCLUDE:-}
       - CONFLUENCE_OUT=/docs/confluence
       # Выгрузка задач Jira — там же:
       #   docker compose exec kb python jira/sync.py --check

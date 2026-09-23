@@ -1,10 +1,16 @@
 """Выгрузка страниц Confluence в markdown-файлы.
 
-Работает по идентификаторам КОРНЕВЫХ страниц: забирается сама страница и всё
-поддерево под ней, на любой глубине. Выгрузки спейсов целиком нет намеренно —
-в спейсе обычно много лишнего (черновики, архив), а право на просмотр списка
-спейсов отдельное, и администраторы его часто закрывают: получался 403 на
-ровном месте.
+Что выгружать, задаётся так (способы можно совмещать):
+  - CONFLUENCE_SPACES=DEV,OPS — пространства целиком, по ключу. Список всех
+    пространств при этом НЕ запрашивается: право на него отдельное, его часто
+    закрывают, и раньше это давало 403 на ровном месте. Ключ виден в адресе:
+    .../display/DEV/... или .../spaces/DEV/...
+  - CONFLUENCE_SPACES=* — все общие пространства. Вот здесь список нужен;
+    закрыт — скрипт скажет и предложит перечислить ключи. Личные (~логин) не
+    берутся: там черновики и чужие заметки
+  - CONFLUENCE_PAGES — корневые страницы: сама страница и всё поддерево
+Лишнее убирается CONFLUENCE_EXCLUDE: ключ пространства или номер страницы
+(страница исключается вместе с поддеревом — удобно для «Архива»).
 
 Рассчитан на запуск в закрытом контуре без посторонней помощи, поэтому:
   - сначала проверяет связь и печатает, что видит (--check)
@@ -17,7 +23,9 @@
 
     CONFLUENCE_URL     https://wiki.company.local
     CONFLUENCE_TOKEN   personal access token
+    CONFLUENCE_SPACES  DEV,OPS или *   пространства целиком
     CONFLUENCE_PAGES   123456,789012   идентификаторы корневых страниц
+    CONFLUENCE_EXCLUDE ARCH,123456     что пропустить: ключи и номера страниц
     CONFLUENCE_OUT     куда складывать (по умолчанию ./confluence/pages)
 
 Использование:
@@ -91,9 +99,10 @@ class Client:
     Basic auth), она здесь не реализована.
     """
 
-    def __init__(self, base_url: str, token: str, timeout: int = 60):
+    def __init__(self, base_url: str, token: str, timeout: int = 60, page_size: int = 25):
         self.base = base_url.rstrip("/")
         self.timeout = timeout
+        self.page_size = page_size
         self.last_raw: str = ""
 
         self.session = requests.Session()
@@ -112,7 +121,7 @@ class Client:
         self.session.mount("https://", HTTPAdapter(max_retries=retry))
         self.session.mount("http://", HTTPAdapter(max_retries=retry))
 
-    def get(self, path: str, **params) -> dict:
+    def get(self, path: str, not_found: str | None = None, **params) -> dict:
         clean = {k: v for k, v in params.items() if v is not None}
 
         try:
@@ -150,14 +159,16 @@ class Client:
             raise ConfluenceError(
                 f"403: доступ запрещён на {path}\n"
                 "  Токен принят (иначе был бы 401), но прав на эту операцию нет.\n"
-                "  - если путь /rest/api/space: просмотр списка спейсов часто\n"
-                "    закрыт администратором. Укажите CONFLUENCE_PAGES с id\n"
-                "    страницы — список спейсов тогда не запрашивается\n"
+                "  - если путь /rest/api/space: просмотр списка пространств\n"
+                "    часто закрыт администратором. Перечислите ключи явно:\n"
+                "    CONFLUENCE_SPACES=DEV,OPS — список тогда не запрашивается\n"
                 "  - если путь /rest/api/content/<id>: нет доступа к этой\n"
                 "    странице или она в закрытом спейсе\n"
                 "  - проверьте тем же токеном вручную:\n"
                 f"    curl -H \"Authorization: Bearer <токен>\" {self.base}{path}"
             )
+        if resp.status_code == 404 and not_found:
+            raise ConfluenceError(not_found)
         if resp.status_code == 404:
             raise ConfluenceError(
                 f"404: путь {path} не найден.\n"
@@ -177,33 +188,100 @@ class Client:
                 "значит запрос ушёл неаутентифицированным или URL ведёт не в API"
             ) from e
 
-    def page(self, page_id: str, with_body: bool = True) -> dict:
-        return self.get(
-            f"/rest/api/content/{page_id}",
-            expand="body.storage,version,space" if with_body else "version,space",
-        )
+    @staticmethod
+    def expand(with_body: bool) -> str:
+        # ancestors — чтобы исключать разделы вроде «Архива» вместе с поддеревом
+        base = "version,space,ancestors"
+        return f"body.storage,{base}" if with_body else base
 
-    def descendants(self, page_id: str, with_body: bool, page_size: int = 25):
+    def page(self, page_id: str, with_body: bool = True) -> dict:
+        return self.get(f"/rest/api/content/{page_id}", expand=self.expand(with_body))
+
+    def _paged(self, path: str, **params):
+        start = 0
+        while True:
+            data = self.get(path, start=start, limit=self.page_size, **params)
+            results = data.get("results", [])
+            yield from results
+            if len(results) < self.page_size:
+                return
+            start += self.page_size
+
+    def descendants(self, page_id: str, with_body: bool):
         """Все страницы под указанной, на любой глубине.
 
         CQL `ancestor` даёт именно поддерево, а не только прямых потомков —
         то есть один идентификатор раздела забирает весь его материал.
         """
-        start = 0
-        while True:
-            data = self.get(
-                "/rest/api/content/search",
-                cql=f"ancestor={page_id} and type=page",
-                expand="body.storage,version,space" if with_body else "version,space",
-                start=start,
-                limit=page_size,
-            )
-            results = data.get("results", [])
-            for item in results:
-                yield item
-            if len(results) < page_size:
-                return
-            start += page_size
+        yield from self._paged(
+            "/rest/api/content/search",
+            cql=f"ancestor={page_id} and type=page",
+            expand=self.expand(with_body),
+        )
+
+    def space(self, key: str) -> dict:
+        return self.get(
+            f"/rest/api/space/{key}",
+            not_found=(
+                f"Пространства «{key}» нет или у токена нет к нему доступа — "
+                "Confluence отвечает на оба случая одинаково.\n"
+                "  - ключ виден в адресе страницы: .../display/КЛЮЧ/... или "
+                ".../spaces/КЛЮЧ/...\n"
+                "  - нужен ключ, а не название: «Разработка» -> DEV"
+            ),
+        )
+
+    def spaces(self):
+        """Все общие пространства. Личные (~логин) не берём: там черновики."""
+        yield from self._paged("/rest/api/space", type="global", status="current")
+
+    def space_pages(self, key: str, with_body: bool):
+        """Все страницы пространства.
+
+        Обычный список содержимого, а не CQL: CQL идёт через поисковый индекс
+        Confluence, и если тот отстал или перестраивается, части страниц не
+        будет. Список содержимого берётся из базы напрямую.
+        """
+        yield from self._paged(
+            "/rest/api/content",
+            spaceKey=key,
+            type="page",
+            status="current",
+            expand=self.expand(with_body),
+        )
+
+def split_list(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+class Exclusions:
+    """CONFLUENCE_EXCLUDE: числа — страницы (вместе с поддеревом), остальное —
+    ключи пространств."""
+
+    def __init__(self, value: str):
+        items = split_list(value)
+        self.pages = {i for i in items if i.isdigit()}
+        self.spaces = {i for i in items if not i.isdigit()}
+
+    def hit(self, page: dict) -> bool:
+        if str(page.get("id")) in self.pages:
+            return True
+        if page.get("space", {}).get("key") in self.spaces:
+            return True
+        # Поддерево: страница исключена, если исключён любой её предок
+        return any(str(a.get("id")) in self.pages for a in page.get("ancestors") or [])
+
+    def __bool__(self) -> bool:
+        return bool(self.pages or self.spaces)
+
+    def __str__(self) -> str:
+        parts = []
+        if self.spaces:
+            parts.append("пространства " + ", ".join(sorted(self.spaces)))
+        if self.pages:
+            parts.append("страницы с поддеревом " + ", ".join(sorted(self.pages)))
+        return "; ".join(parts)
+
 
 def safe_name(title: str) -> str:
     """Заголовок страницы -> имя файла."""
@@ -240,7 +318,9 @@ def main() -> int:
     url = os.getenv("CONFLUENCE_URL", "").strip()
     token = os.getenv("CONFLUENCE_TOKEN", "").strip()
     out_dir = Path(os.getenv("CONFLUENCE_OUT", str(HERE / "pages")))
-    pages_env = os.getenv("CONFLUENCE_PAGES", "").strip()
+    roots = split_list(os.getenv("CONFLUENCE_PAGES", ""))
+    spaces_env = os.getenv("CONFLUENCE_SPACES", "").strip()
+    excluded = Exclusions(os.getenv("CONFLUENCE_EXCLUDE", ""))
 
     if not url or not token:
         print("Не заданы CONFLUENCE_URL и CONFLUENCE_TOKEN.")
@@ -248,33 +328,78 @@ def main() -> int:
         print("настройки стека. После правки: docker compose up -d kb")
         return 2
 
-    client = Client(url, token)
-
-    roots = [p.strip() for p in pages_env.split(",") if p.strip()]
-    if not roots:
-        print("Не задан CONFLUENCE_PAGES — идентификаторы корневых страниц.")
-        print("Идентификатор виден в адресе страницы: ...?pageId=123456")
-        print("Забирается сама страница и всё поддерево под ней.")
+    if not roots and not spaces_env:
+        print("Не задано, что выгружать. В .env одно из двух (или оба):")
+        print("  CONFLUENCE_SPACES=DEV,OPS  — пространства целиком, по ключу;")
+        print("                               ключ виден в адресе: .../display/DEV/...")
+        print("  CONFLUENCE_SPACES=*        — все общие пространства")
+        print("  CONFLUENCE_PAGES=123456    — страница и всё под ней;")
+        print("                               номер виден в адресе: ...?pageId=123456")
         return 2
 
-    print(f"Страницы: {', '.join(roots)}")
+    client = Client(
+        url, token, page_size=int(os.getenv("CONFLUENCE_PAGE_SIZE", "50"))
+    )
+
+    # --- пространства
+    space_keys: list[str] = []
+    if spaces_env == "*":
+        try:
+            found = list(client.spaces())
+        except ConfluenceError as e:
+            print("Список пространств получить не удалось — режим «все» недоступен.")
+            print("Перечислите нужные ключи явно: CONFLUENCE_SPACES=DEV,OPS\n")
+            print(e)
+            return 1
+        print(f"Пространства (все общие, найдено {len(found)}):")
+        for info in found:
+            key = info.get("key", "")
+            mark = "  пропускаю (CONFLUENCE_EXCLUDE)" if key in excluded.spaces else ""
+            print(f"    {key:12} «{info.get('name', '')}»{mark}")
+            if not mark:
+                space_keys.append(key)
+    elif spaces_env:
+        print("Пространства:")
+        for key in split_list(spaces_env):
+            if key in excluded.spaces:
+                print(f"    {key:12} пропускаю (CONFLUENCE_EXCLUDE)")
+                continue
+            try:
+                info = client.space(key)
+            except ConfluenceError as e:
+                print(f"    {key:12} недоступно.\n{e}")
+                return 1
+            print(f"    {key:12} «{info.get('name', '')}»")
+            space_keys.append(key)
+
+    # --- корневые страницы
+    if roots:
+        print("Страницы:")
     for page_id in roots:
         try:
             info = client.page(page_id, with_body=False)
-            print(f"    {page_id:10} «{info.get('title')}» "
-                  f"(спейс {info.get('space', {}).get('key')})")
+            print(f"    {page_id:12} «{info.get('title')}» "
+                  f"(пространство {info.get('space', {}).get('key')})")
         except ConfluenceError as e:
-            print(f"    {page_id:10} недоступна.\n{e}")
+            print(f"    {page_id:12} недоступна.\n{e}")
             return 1
 
+    if excluded:
+        print(f"Исключено: {excluded}")
+
     if args.check:
-        for page_id in roots:
-            try:
-                count = sum(1 for _ in client.descendants(page_id, with_body=False))
+        print("\nСтраниц к выгрузке (без исключённых):")
+        try:
+            for key in space_keys:
+                pages = client.space_pages(key, with_body=False)
+                print(f"    {key:12} {sum(1 for p in pages if not excluded.hit(p))}")
+            for page_id in roots:
+                pages = client.descendants(page_id, with_body=False)
                 # сама корневая страница тоже выгружается
-                print(f"    {page_id:10} страниц в поддереве: {count + 1}")
-            except ConfluenceError as e:
-                print(f"    {page_id:10} ошибка: {e}")
+                print(f"    {page_id:12} {sum(1 for p in pages if not excluded.hit(p)) + 1}")
+        except ConfluenceError as e:
+            print(f"    ошибка: {e}")
+            return 1
         return 0
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -285,7 +410,9 @@ def main() -> int:
     processed = 0
 
     def source_pages():
-        """Корневые страницы и всё, что под ними."""
+        """Пространства целиком, потом корневые страницы и всё под ними."""
+        for key in space_keys:
+            yield from client.space_pages(key, with_body=True)
         for root_id in roots:
             # Корневая страница тоже нужна: в выдаче CQL ancestor её нет
             yield client.page(root_id, with_body=True)
@@ -298,7 +425,12 @@ def main() -> int:
             break
 
         page_id = str(page.get("id"))
-        # Поддеревья могут пересекаться, если указать вложенные разделы
+        # Исключённое не попадает в seen_ids: выгруженное раньше считается
+        # пропавшим, и его файл уберётся — так «Архив» уходит из поиска
+        if excluded.hit(page):
+            continue
+        # Поддеревья могут пересекаться: вложенные разделы, страница из
+        # CONFLUENCE_PAGES внутри пространства из CONFLUENCE_SPACES
         if page_id in seen_ids:
             continue
         seen_ids.add(page_id)
@@ -313,8 +445,17 @@ def main() -> int:
             Path(args.dump_raw).write_text(client.last_raw, encoding="utf-8")
             print(f"\nСырой ответ сохранён: {args.dump_raw}")
 
+        target = out_dir / space / f"{safe_name(title)}.md"
         previous = state.get(page_id)
-        if previous and previous.get("updated") == updated:
+        # Версия не изменилась — ещё не повод пропустить. Переименование и
+        # перенос в другое пространство версию не меняют, а файл должен
+        # переехать; и файл могли удалить с диска руками
+        if (
+            previous
+            and previous.get("updated") == updated
+            and previous.get("file") == str(target)
+            and target.is_file()
+        ):
             stats["без изменений"] += 1
             continue
 
@@ -326,9 +467,9 @@ def main() -> int:
             stats["ошибок"] += 1
             continue
 
-        target = out_dir / space / f"{safe_name(title)}.md"
         action = "обновлено" if previous else "новых"
         stats[action] += 1
+        old_file = Path(previous["file"]) if previous and previous.get("file") else None
 
         if args.dry_run:
             print(f"  [{action:9}] {target.relative_to(out_dir.parent)} "
@@ -336,6 +477,10 @@ def main() -> int:
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(md, encoding="utf-8")
+            # Переименовали или перенесли: старый файл убираем, иначе в поиске
+            # висели бы обе версии, и старая — навсегда
+            if old_file and old_file != target and old_file.is_file():
+                old_file.unlink()
 
         new_state[page_id] = {
             "updated": updated,
