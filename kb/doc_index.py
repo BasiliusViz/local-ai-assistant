@@ -158,6 +158,10 @@ def load_state(path: Path, version: int = CHUNKER_VERSION) -> dict[str, str]:
     return data.get("files", {})
 
 
+# Как часто сохранять состояние по ходу прогона, в файлах
+CHECKPOINT_EVERY = 200
+
+
 def save_state(path: Path, files: dict[str, str], version: int = CHUNKER_VERSION) -> None:
     """Записать состояние через временный файл.
 
@@ -240,6 +244,15 @@ def main() -> int:
     skipped = 0
 
     for number, path in enumerate(files, 1):
+        # Промежуточное сохранение. Без него прогон на десятки тысяч файлов,
+        # оборванный на середине (SSH, перезапуск контейнера), начинался бы
+        # следующим запуском с нуля — часы эмбеддингов впустую. Пишем в НАЧАЛЕ
+        # итерации: все файлы до текущего обработаны целиком. Ещё не
+        # пройденные берём из прошлого состояния, иначе их пересчитали бы зря;
+        # пропавшие с диска тоже остаются — их вычистит конец прогона
+        if number > 1 and (number - 1) % CHECKPOINT_EVERY == 0:
+            save_state(state_path, {**previous, **current})
+
         rel = str(path.relative_to(root)).replace("\\", "/")
         try:
             raw = path.read_bytes()
