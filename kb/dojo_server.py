@@ -31,7 +31,7 @@ import sys
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
-from kb import dojo, dojo_retriever
+from kb import dojo, dojo_compare, dojo_retriever
 from kb.embedder import EmbedError
 
 logging.basicConfig(
@@ -64,6 +64,8 @@ def dojo_findings(
     query: str | None = None,
     limit: int = 25,
     response_format: str = "concise",
+    engagement: str = "",
+    compare_with: str = "",
 ) -> dict:
     """УЯЗВИМОСТИ ПРОДУКТОВ из DefectDojo: что нашли сканеры и что не закрыто.
 
@@ -93,6 +95,21 @@ def dojo_findings(
       «dojo какие продукты есть»          -> без аргументов, ответ — by_product
       «dojo где у нас критичные»          -> severity="критичные"
       «dojo где у нас log4j»              -> query="log4j"
+
+    ВЕТКИ (engagement). У продукта engagement'ы называются «ветка_продукт»
+    (main_abinf, feature-x_abinf); ветку называй коротко, как в вопросе.
+    Нужен product. Это живой запрос в DefectDojo, не индекс; query с ним не
+    работает, status и severity — работают.
+      «dojo какие ветки есть в abinf»           -> product="abinf", engagement="*"
+      «dojo что в ветке feature-x в abinf»      -> product="abinf",
+                                                   engagement="feature-x"
+      «dojo сравни ветки main и feature-x в abinf»
+                                                -> product="abinf", engagement="main",
+                                                   compare_with="feature-x"
+    Сравнение возвращает три группы: only_in_second (появилось во второй
+    ветке), only_in_first (есть в первой, во второй нет — исправлено или не
+    найдено), in_both. У каждой сводка по уровням. Отвечай по этим группам и
+    в этом порядке: сначала новое — ради него обычно и сравнивают.
 
     Про режим "report". По нему пишется документ: сводка по уровням, затем
     по каждой находке — в чём проблема, чем грозит, что предлагает сканер,
@@ -131,6 +148,9 @@ def dojo_findings(
         продуктам, и у каждой находки указан её продукт. В ответе ОБЯЗАТЕЛЬНО приводи ссылки: без
         них человеку некуда идти разбираться.
     """
+    if engagement.strip() or compare_with.strip():
+        return engagement_mode(product, engagement, compare_with, status, severity, limit)
+
     try:
         result = dojo_retriever.search(
             product=product,
@@ -177,6 +197,57 @@ def dojo_findings(
         "количестве открытых, оговори это и предложи свериться."
     )
     return out
+
+
+def engagement_mode(
+    product: str,
+    engagement: str,
+    compare_with: str,
+    status: str | None,
+    severity: str | None,
+    limit: int,
+) -> dict:
+    """Ветки продукта: список, одна ветка или сравнение двух — живым запросом."""
+    if not dojo.configured():
+        return {
+            "error": "Ветки смотрятся живым запросом в DefectDojo, а у сервера "
+            "не заданы DOJO_URL и DOJO_TOKEN."
+        }
+    if dojo_retriever.wants_all(product):
+        return {
+            "error": "Для веток нужен продукт: engagement'ы принадлежат "
+            "продукту. Спроси, какой продукт имеется в виду."
+        }
+    first, second = engagement.strip(), compare_with.strip()
+    if not first:
+        first, second = second, ""
+    try:
+        state = (
+            dojo_retriever.normalize_status(status)
+            if status and status != "all"
+            else None
+        )
+        level = dojo.normalize_severity(severity) if severity else None
+        if _norm(first) in dojo_compare.ALL:
+            return dojo_compare.list_engagements(product)
+        if second:
+            result = dojo_compare.compare(product, first, second, state, level, limit)
+            result["citation_instruction"] = (
+                "Ответь по трём группам: сначала only_in_second — что появилось "
+                "во второй ветке, затем only_in_first — что было в первой и во "
+                "второй не найдено, затем in_both. Для каждой — сводка по "
+                "уровням и находки со ссылками. Данные живые, из DefectDojo."
+            )
+            return result
+        return dojo_compare.one(product, first, state, level, limit)
+    except (dojo.DojoError, dojo_retriever.DojoSearchError) as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Запрос к DefectDojo не удался: {e}"}
+
+
+def _norm(text: str) -> str:
+    return text.strip().casefold()
 
 
 def main() -> None:
