@@ -9,7 +9,7 @@
        подставляя адреса, токен и модель (старый конфиг сохраняется рядом);
     4. проверяет связь с моделью и с MCP-серверами.
 
-  Чего НЕ делает (вручную, раздел 3 в USER-GUIDE.md): перезапуск VS Code,
+  Чего НЕ делает (вручную, раздел 3 в guides/USER-GUIDE.md): перезапуск VS Code,
   режим Agent и политика инструментов Automatic — Continue хранит её у себя
   внутри, а не в файле.
 
@@ -261,7 +261,7 @@ foreach ($p in $servers.Keys) {
 # ---------------------------------------------------------------- summary
 Write-Host ""
 if ($script:Fails -eq 0) {
-    Write-Host "Готово. Осталось вручную (USER-GUIDE.md, раздел 3):" -ForegroundColor Green
+    Write-Host "Готово. Осталось вручную (guides/USER-GUIDE.md, раздел 3):" -ForegroundColor Green
 } else {
     Write-Host "Ошибок: $($script:Fails). Исправьте и запустите скрипт ещё раз. Дальше вручную:" -ForegroundColor Red
 }

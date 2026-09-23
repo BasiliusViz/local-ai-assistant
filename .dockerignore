@@ -12,3 +12,5 @@ corpus/
 data/
 .git/
 *.log
+win_old/
+guides/
