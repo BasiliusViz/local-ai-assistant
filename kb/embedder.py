@@ -44,7 +44,14 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
                 "родное API Ollama — тогда задайте KB_OLLAMA_API=native "
                 "(или OLLAMA_API=native в .env)"
             )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            # Тело ответа — главное: там причина («input length exceeds the
+            # context length» и т. п.). Без него 400 не отличить от 400
+            longest = max(len(t) for t in texts)
+            raise EmbedError(
+                f"{resp.status_code} от {url}: {resp.text[:300].strip()} "
+                f"(в запросе {len(texts)} строк, самая длинная — {longest} символов)"
+            )
     except httpx.HTTPError as e:
         raise EmbedError(
             f"Не удалось получить эмбеддинги с {url}: {e}. "

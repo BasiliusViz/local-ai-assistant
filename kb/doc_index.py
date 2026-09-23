@@ -34,12 +34,21 @@ from pathlib import Path
 from qdrant_client import QdrantClient, models
 
 from kb import config
-from kb.embedder import embed_batch
+from kb.embedder import EmbedError, embed_batch
 
 log = logging.getLogger(__name__)
 
 SUFFIXES = {".md", ".markdown", ".txt"}
 MAX_CHUNK_CHARS = 1500
+# Потолок одного куска для эмбеддера. Шлюз может отдавать bge-m3 с окном
+# меньше заявленных 8192 токенов, и слишком длинный кусок получает 400.
+# 3000 символов — порядка 1000-1500 токенов даже на таблицах. Если 400
+# повторяются — уменьшить в .env: KB_EMBED_MAX_CHARS=1500
+EMBED_MAX_CHARS = int(os.getenv("KB_EMBED_MAX_CHARS", "3000"))
+# Сколько файлов подряд может не посчитаться, прежде чем прогон остановится:
+# один-два — плохие страницы, десяток подряд — эмбеддер лежит, и молотить
+# остальные тысячи файлов бессмысленно
+MAX_FAILS_IN_ROW = 10
 HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 FENCE = re.compile(r"^\s*```")
 
@@ -97,7 +106,56 @@ def split_text(text: str, max_len: int = MAX_CHUNK_CHARS) -> list[dict]:
             buf = f"{buf}\n\n{para}" if buf else para
         if buf.strip():
             chunks.append({"heading": path, "text": buf.strip()})
-    return chunks
+
+    # Абзац не режется — таблица, список, блок кода остаются одним куском,
+    # чтобы «шаг 3» не терял «шаги 1-2». Но на реальном Confluence бывают
+    # таблицы на сотни строк и вставленные логи: такой кусок превышает окно
+    # эмбеддера на шлюзе, и тот отвечает 400. Режем только их
+    out: list[dict] = []
+    for chunk in chunks:
+        if len(chunk["text"]) <= EMBED_MAX_CHARS:
+            out.append(chunk)
+        else:
+            out += [
+                {"heading": chunk["heading"], "text": piece}
+                for piece in split_oversized(chunk["text"], EMBED_MAX_CHARS)
+            ]
+    return out
+
+
+def split_oversized(text: str, limit: int) -> list[str]:
+    """Кусок длиннее окна эмбеддера -> части по строкам, не длиннее limit.
+
+    У таблицы в каждую часть повторяется шапка (строка заголовков и
+    разделитель): строка «| nginx | 1.25 | prod |» без неё — набор слов,
+    непонятно, что это за столбцы. Строка длиннее limit (минифицированный
+    JSON, base64) режется по символам — смысла в ней всё равно нет.
+    """
+    lines = text.splitlines()
+    header: list[str] = []
+    if (
+        len(lines) >= 2
+        and lines[0].lstrip().startswith("|")
+        and re.fullmatch(r"\s*\|?[\s:|-]+\|?\s*", lines[1])
+    ):
+        header = lines[:2]
+        lines = lines[2:]
+    head = "\n".join(header)
+    room = max(limit - len(head) - 1, limit // 2)
+
+    pieces: list[str] = []
+    buf: list[str] = []
+    size = 0
+    for line in lines:
+        for part in [line[i : i + room] for i in range(0, len(line), room)] or [""]:
+            if buf and size + len(part) + 1 > room:
+                pieces.append("\n".join(buf))
+                buf, size = [], 0
+            buf.append(part)
+            size += len(part) + 1
+    if buf:
+        pieces.append("\n".join(buf))
+    return [f"{head}\n{p}" if head else p for p in pieces if p.strip()]
 
 
 def ensure_collection(client: QdrantClient, name: str) -> None:
@@ -242,6 +300,8 @@ def main() -> int:
     print(f"Файлов: {len(files)}" + ("" if args.full else f", уже посчитано: {len(previous)}"))
     total = 0
     skipped = 0
+    failed: list[str] = []
+    fails_in_row = 0
 
     for number, path in enumerate(files, 1):
         # Промежуточное сохранение. Без него прогон на десятки тысяч файлов,
@@ -276,33 +336,58 @@ def main() -> int:
             continue
 
         text = raw.decode("utf-8", errors="replace")
+        chunks = split_text(text) if text.strip() else []
 
-        # Старые точки этого файла долой: документ мог стать короче. Делаем это
-        # до проверки на пустоту — если страницу очистили, её старый текст не
-        # должен остаться в поиске
-        delete_file_points(client, args.collection, args.source, rel)
+        if chunks:
+            print(f"[{number}/{len(files)}] {rel} - чанков: {len(chunks)}")
 
-        if not text.strip():
+        # Сначала векторы, потом замена — как в dojo_index. Упал эмбеддер на
+        # этом файле — старые точки остаются, страница в поиске в прежнем
+        # виде, а не пропадает
+        try:
+            vectors = []
+            for start in range(0, len(chunks), args.batch):
+                # В вектор идёт заголовок + текст, в базу - только текст
+                vectors += embed_batch(
+                    [
+                        f"{c['heading']}\n\n{c['text']}" if c["heading"] else c["text"]
+                        for c in chunks[start : start + args.batch]
+                    ]
+                )
+        except EmbedError as e:
+            failed.append(rel)
+            fails_in_row += 1
+            print(f"  [!] {rel}: эмбеддинги не получены, пропускаю — {e}")
+            # Не запоминаем новый хеш: следующий прогон попробует снова. Прежний
+            # — оставляем, иначе конец прогона счёл бы файл удалённым
+            if rel in previous:
+                current[rel] = previous[rel]
+            else:
+                current.pop(rel, None)
+            if fails_in_row >= MAX_FAILS_IN_ROW:
+                save_state(state_path, {**previous, **current})
+                print(
+                    f"\n{fails_in_row} файлов подряд без эмбеддингов — похоже, "
+                    "эмбеддер недоступен, а не плохие страницы. Останавливаюсь; "
+                    "сделанное сохранено, следующий запуск продолжит."
+                )
+                return 1
             continue
+        fails_in_row = 0
 
-        chunks = split_text(text)
+        # Старые точки этого файла долой: документ мог стать короче. И для
+        # пустого — если страницу очистили, её старый текст не должен остаться
+        # в поиске
+        delete_file_points(client, args.collection, args.source, rel)
         if not chunks:
             continue
-
-        print(f"[{number}/{len(files)}] {rel} - чанков: {len(chunks)}")
 
         stat = path.stat()
         updated = f"{__import__('datetime').datetime.utcfromtimestamp(stat.st_mtime).isoformat()}Z"
 
         for start in range(0, len(chunks), args.batch):
             batch = chunks[start : start + args.batch]
-            # В вектор идёт заголовок + текст, в базу - только текст
-            vectors = embed_batch(
-                [
-                    f"{c['heading']}\n\n{c['text']}" if c["heading"] else c["text"]
-                    for c in batch
-                ]
-            )
+            batch_vectors = vectors[start : start + args.batch]
             client.upsert(
                 collection_name=args.collection,
                 points=[
@@ -322,7 +407,7 @@ def main() -> int:
                             "text": chunk["text"],
                         },
                     )
-                    for i, (chunk, vec) in enumerate(zip(batch, vectors))
+                    for i, (chunk, vec) in enumerate(zip(batch, batch_vectors))
                 ],
                 wait=True,
             )
@@ -344,6 +429,16 @@ def main() -> int:
     if gone:
         print(f"Пропало с диска и убрано из индекса: {len(gone)}")
     print(f"Всего в коллекции {args.collection}: {info.points_count}")
+    if failed:
+        print(f"\nНе посчитано (повторятся в следующий прогон): {len(failed)}")
+        for rel in failed[:20]:
+            print(f"    {rel}")
+        if len(failed) > 20:
+            print(f"    ... и ещё {len(failed) - 20}")
+        print(
+            "Если причина — длина (400, context length), уменьшите "
+            f"KB_EMBED_MAX_CHARS в .env (сейчас {EMBED_MAX_CHARS})"
+        )
     return 0
 
 

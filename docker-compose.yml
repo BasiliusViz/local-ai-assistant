@@ -53,6 +53,7 @@ services:
       - KB_EXPAND=${KB_EXPAND:-1}
       - KB_MIN_SCORE=${KB_MIN_SCORE:-0.48}
       - KB_CODE_BUDGET_CHARS=${KB_CODE_BUDGET_CHARS:-6000}
+      - KB_EMBED_MAX_CHARS=${KB_EMBED_MAX_CHARS:-3000}
       - KB_EXPAND_MODEL=${GEN_MODEL:-qwen3:8b}
       - KB_EMBED_MODEL=${EMBED_MODEL:-bge-m3}
       # Адрес и ключ доступа к Ollama. По умолчанию — соседний контейнер без
