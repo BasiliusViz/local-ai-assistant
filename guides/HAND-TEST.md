@@ -87,7 +87,16 @@ docker compose exec kb python -m kb.test_dojo_retriever
 docker compose exec kb python -m kb.test_code_chunks
 ```
 
-В конце каждого `OK`.
+```bash
+docker compose exec kb python -m kb.test_doc_index
+```
+
+```bash
+docker compose exec kb python confluence/test_sync.py
+```
+
+В конце каждого `OK`. Тесты с Qdrant заводят временные коллекции и сами их
+удаляют — рабочую базу не трогают.
 
 ### 8. Самопроверка всего стека
 
