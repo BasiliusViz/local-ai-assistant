@@ -195,6 +195,23 @@ def resolve_product(name: str) -> str:
     )
 
 
+def live_product(name: str) -> str | None:
+    """Есть ли продукт в самом DefectDojo (с учётом DOJO_PRODUCTS и прав).
+
+    Неоднозначное имя — ошибка с перечнем кандидатов, как и при поиске по
+    индексу. Нет связи или не настроено — None: тогда остаётся ответ индекса.
+    """
+    if not dojo.configured():
+        return None
+    try:
+        with dojo._client() as c:
+            return dojo.resolve_product(c, name).get("name") or None
+    except dojo.DojoError as e:
+        if "несколько продуктов" in str(e):
+            raise DojoSearchError(str(e)) from e
+        return None
+
+
 def normalize_status(value: str) -> str:
     wanted = _norm(value)
     for prefix, canonical in STATUS_RU.items():
@@ -419,7 +436,31 @@ def search(
             "docker compose exec kb python -m kb.dojo_index"
         )
 
-    name = None if wants_all(product) else resolve_product(product or "")
+    try:
+        name = None if wants_all(product) else resolve_product(product or "")
+    except DojoSearchError:
+        # В индексе продукта нет — это ещё не «продукта не существует». Чаще
+        # всего у него просто нет находок тех уровней, что индексируются
+        # (DOJO_INDEX_SEVERITIES=Critical: продукт без критичных в индекс не
+        # попадает вовсе). Модель, получив «нет среди находок», делала вывод,
+        # что продукта нет, и не шла смотреть его engagement'ы
+        live = live_product(product or "")
+        if not live:
+            raise
+        return {
+            "product": live,
+            "summary": {lvl: 0 for lvl in levels()},
+            "indexed_levels": levels(),
+            "applied_filters": {"product": live},
+            "hits": [],
+            "note": (
+                f"Продукт {live} есть в DefectDojo, но в индексе по нему нет "
+                f"находок уровней {', '.join(levels())} (в индекс идут только "
+                "они). Engagement'ы, сравнение и release notes по нему работают: "
+                "они берут данные из DefectDojo напрямую — вызови dojo_findings "
+                "с engagement."
+            ),
+        }
     state = normalize_status(status) if status and status != "all" else None
     level = dojo.normalize_severity(severity) if severity else None
     if level and level not in levels():

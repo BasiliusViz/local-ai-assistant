@@ -247,6 +247,52 @@ class DojoRetrieverTest(unittest.TestCase):
         self.assertEqual(out["indexed_levels"], ["Critical", "High"])
         self.assertIn("только уровни", out["citation_instruction"])
 
+    # --- продукта нет в индексе, но он есть в DefectDojo
+
+    def live(self, name_or_error):
+        from contextlib import nullcontext
+
+        def resolve(client, name):
+            if isinstance(name_or_error, Exception):
+                raise name_or_error
+            return {"id": 7, "name": name_or_error}
+
+        return [
+            mock.patch("kb.dojo.configured", lambda: True),
+            mock.patch("kb.dojo._client", lambda: nullcontext(object())),
+            mock.patch("kb.dojo.resolve_product", resolve),
+        ]
+
+    def test_product_only_in_dojo_is_not_missing(self):
+        from kb import dojo_server
+
+        patches = self.live("Payments Gateway")
+        for p in patches:
+            p.start()
+        try:
+            out = dojo_server.dojo_findings(product="payments")
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertNotIn("error", out)
+        self.assertEqual(out["product"], "Payments Gateway")
+        self.assertEqual(out["found"], 0)
+        self.assertIn("есть в DefectDojo", out["note"])
+        self.assertIn("Не говори, что продукта нет", out["citation_instruction"])
+
+    def test_product_missing_everywhere(self):
+        from kb import dojo, dojo_server
+
+        patches = self.live(dojo.DojoError("Продукта «payments» нет среди доступных."))
+        for p in patches:
+            p.start()
+        try:
+            out = dojo_server.dojo_findings(product="payments")
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertIn("среди находок нет", out["error"])
+
     def test_not_indexed_level_explained(self):
         from kb import dojo_server
 

@@ -99,7 +99,10 @@ def dojo_findings(
     ВЕТКИ (engagement). У продукта engagement'ы называются «ветка_продукт»
     (main_abinf, feature-x_abinf); ветку называй коротко, как в вопросе.
     Нужен product. Это живой запрос в DefectDojo, не индекс; query с ним не
-    работает, status и severity — работают.
+    работает, status и severity — работают. Про engagement, сравнение и
+    release notes вызывай СРАЗУ с engagement — не проверяй продукт отдельным
+    вызовом без engagement: в индексе продукта может не быть (там только
+    часть уровней), а в DefectDojo он есть.
       «dojo какие ветки есть в abinf»           -> product="abinf", engagement="*"
       «dojo что в ветке feature-x в abinf»      -> product="abinf",
                                                    engagement="feature-x"
@@ -190,6 +193,9 @@ def dojo_findings(
     }
     if everywhere:
         out["by_product"] = result["by_product"]
+    if result.get("note"):
+        # Продукт есть в DefectDojo, но не в индексе — не «продукта нет»
+        out["note"] = result["note"]
     out["found"] = len(hits)
     out["findings"] = [
         h.as_dict(detailed=detailed, report=report, with_product=everywhere)
@@ -206,6 +212,13 @@ def dojo_findings(
         + "Данные из индекса, а не из живого DefectDojo: если речь о "
         "количестве открытых, оговори это и предложи свериться."
     )
+    if result.get("note"):
+        out["citation_instruction"] = (
+            "Перескажи поле note: продукт СУЩЕСТВУЕТ, в индексе по нему нет "
+            "находок индексируемых уровней. Не говори, что продукта нет. Если "
+            "спрашивали про engagement, сравнение или release notes — вызови "
+            "dojo_findings ещё раз с engagement."
+        )
     indexed = result.get("indexed_levels") or []
     if len(indexed) < len(dojo.SEVERITIES):
         out["indexed_levels"] = indexed
