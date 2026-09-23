@@ -65,7 +65,9 @@ class Hit:
     score: float = 0.0
     chunk_idx: int = 0
 
-    def as_dict(self, detailed: bool = False, report: bool = False) -> dict:
+    def as_dict(
+        self, detailed: bool = False, report: bool = False, with_product: bool = False
+    ) -> dict:
         out = {
             "id": self.finding_id,
             "title": self.title,
@@ -73,6 +75,10 @@ class Hit:
             "status": self.status,
             "url": self.url,
         }
+        # По всем продуктам находка без имени продукта бесполезна: непонятно,
+        # чья она и кому идти чинить
+        if with_product:
+            out["product"] = self.product
         if self.component:
             out["component"] = self.component
         if self.location:
@@ -149,6 +155,18 @@ def values(field: str, limit: int = 200) -> list[str]:
         return []
 
 
+# Как модель передаёт «по всем продуктам», когда не оставляет поле пустым
+ALL_PRODUCTS = {"", "*", "all", "any", "все", "всё", "любой", "любые", "все продукты"}
+
+
+def wants_all(name: str | None) -> bool:
+    """Продукт не назван — спрашивают про все сразу."""
+    if name is None:
+        return True
+    wanted = _norm(name)
+    return wanted in ALL_PRODUCTS or wanted.startswith(("все ", "всё ", "all "))
+
+
 def resolve_product(name: str) -> str:
     """Название из вопроса -> продукт, как он записан в индексе."""
     wanted = _norm(name)
@@ -188,13 +206,23 @@ def normalize_status(value: str) -> str:
     )
 
 
-def counts(product: str, status: str | None) -> dict:
-    """Сводка по уровням. Считаем запросами, а не выгрузкой находок."""
+def counts(product: str | None, status: str | None) -> dict:
+    """Сводка по уровням. Считаем запросами, а не выгрузкой находок.
+
+    product=None — по всем продуктам сразу.
+    """
     out = {}
     for severity in dojo.SEVERITIES:
         must = [
-            models.FieldCondition(key="source", match=models.MatchValue(value=SOURCE)),
-            models.FieldCondition(key="product", match=models.MatchValue(value=product)),
+            models.FieldCondition(key="source", match=models.MatchValue(value=SOURCE))
+        ]
+        if product:
+            must.append(
+                models.FieldCondition(
+                    key="product", match=models.MatchValue(value=product)
+                )
+            )
+        must += [
             models.FieldCondition(
                 key="severity", match=models.MatchValue(value=severity)
             ),
@@ -219,6 +247,60 @@ def counts(product: str, status: str | None) -> dict:
             log.debug("счётчик по %s не сработал: %s", severity, e)
             out[severity] = 0
     return out
+
+
+def by_product(status: str | None) -> list[dict]:
+    """Сводка по каждому продукту: общая картина и заодно список продуктов.
+
+    Продукты без находок в этом состоянии тоже в списке — на вопрос «какие
+    продукты есть» иначе пропали бы как раз самые благополучные. Сортировка
+    по серьёзности: сначала те, где больше критичных, потом высоких и т. д.
+    """
+    rows = []
+    for name in values("product"):
+        c = counts(name, status)
+        rows.append({"product": name, "total": sum(c.values()), **c})
+    rows.sort(key=lambda r: tuple(-r[s] for s in dojo.SEVERITIES) + (r["product"],))
+    return rows
+
+
+def _worst(must: list, levels: list[str], limit: int) -> list[Hit]:
+    """Самые серьёзные находки: идём по уровням от критичного вниз.
+
+    Не «взять сотню и отсортировать»: выборка из Qdrant идёт в порядке id, и
+    при сотнях находок критичные за пределами первой сотни терялись бы. По
+    уровню за раз — критичные гарантированно первыми.
+    """
+    hits: list[Hit] = []
+    for level in levels:
+        if len(hits) >= limit:
+            break
+        points, _ = client().scroll(
+            collection_name=config.COLLECTION,
+            scroll_filter=models.Filter(
+                must=must
+                + [
+                    models.FieldCondition(
+                        key="severity", match=models.MatchValue(value=level)
+                    ),
+                    models.FieldCondition(
+                        key="chunk_idx", match=models.MatchValue(value=0)
+                    ),
+                ]
+            ),
+            limit=WORST_SCAN,
+            with_payload=True,
+        )
+        found = _dedupe(points, len(points))
+        # Внутри уровня — давние первыми: дольше всего висят без внимания
+        found.sort(key=lambda h: h.found_at)
+        hits += found[: limit - len(hits)]
+    return hits
+
+
+# Сколько карточек одного уровня просматривать ради сортировки по дате.
+# Больше — точнее «самые давние», но дольше; на выдачу это не влияет
+WORST_SCAN = 500
 
 
 def _dedupe(points, limit: int) -> list[Hit]:
@@ -303,19 +385,19 @@ def _enrich(hits: list[Hit]) -> None:
         hit.impact = card.get("impact", "")
 
 
-# Порядок серьёзности для сортировки выборки: сначала худшее
-SEVERITY_ORDER = {name: i for i, name in enumerate(dojo.SEVERITIES)}
-
-
 def search(
-    product: str,
+    product: str | None = None,
     status: str | None = "open",
     severity: str | None = None,
     query: str | None = None,
     limit: int = 10,
     report: bool = False,
 ) -> dict:
-    """Находки продукта: сводка по уровням плюс сами находки."""
+    """Находки: сводка по уровням плюс сами находки.
+
+    Без продукта — по всем продуктам сразу: сводка общая, к ней таблица по
+    каждому продукту, а находки подписаны продуктом.
+    """
     if not available():
         if not qdrant_alive():
             raise DojoSearchError(
@@ -328,63 +410,71 @@ def search(
             "docker compose exec kb python -m kb.dojo_index"
         )
 
-    name = resolve_product(product)
+    name = None if wants_all(product) else resolve_product(product or "")
     state = normalize_status(status) if status and status != "all" else None
     level = dojo.normalize_severity(severity) if severity else None
 
     must = [
-        models.FieldCondition(key="source", match=models.MatchValue(value=SOURCE)),
-        models.FieldCondition(key="product", match=models.MatchValue(value=name)),
+        models.FieldCondition(key="source", match=models.MatchValue(value=SOURCE))
     ]
+    if name:
+        must.append(
+            models.FieldCondition(key="product", match=models.MatchValue(value=name))
+        )
     if state:
         must.append(
             models.FieldCondition(
                 key="finding_status", match=models.MatchValue(value=state)
             )
         )
-    if level:
-        must.append(
-            models.FieldCondition(key="severity", match=models.MatchValue(value=level))
-        )
 
-    flt = models.Filter(must=must)
-    applied = {"product": name, "status": state or "любой", "severity": level or "любой"}
+    applied: dict[str, object] = {
+        "product": name or "все продукты",
+        "status": state or "любой",
+        "severity": level or "любой",
+    }
 
     if query and query.strip():
         applied["query"] = query
+        flt_must = list(must)
+        if level:
+            flt_must.append(
+                models.FieldCondition(
+                    key="severity", match=models.MatchValue(value=level)
+                )
+            )
         vector = embed_batch([query])[0]
         found = client().query_points(
             collection_name=config.COLLECTION,
             query=vector,
             using=config.DENSE_VECTOR,
-            query_filter=flt,
+            query_filter=models.Filter(must=flt_must),
             limit=max(limit * 4, 20),
             with_payload=True,
         )
-        hits = _dedupe(list(found.points), limit)
+        points = list(found.points)
+        # Порог — только по всем продуктам, как в поиске по задачам. Внутри
+        # одного продукта косинусы низкие, потому что выбирать не из чего, и
+        # порог выкосил бы верное. А по всем без порога на «log4j» пришли бы
+        # ближайшие находки, даже если log4j нигде нет
+        if not name:
+            points = [p for p in points if p.score >= config.MIN_SCORE]
+            applied["threshold"] = config.MIN_SCORE
+        hits = _dedupe(points, limit)
     else:
-        # Без смысловой части это выборка: берём карточки находок и сортируем
-        # по серьёзности. Порог релевантности здесь не при чём — фильтр уже
-        # отобрал всё, что нужно
-        points, _ = client().scroll(
-            collection_name=config.COLLECTION,
-            scroll_filter=models.Filter(
-                must=must
-                + [models.FieldCondition(key="chunk_idx", match=models.MatchValue(value=0))]
-            ),
-            limit=max(limit * 4, 100),
-            with_payload=True,
-        )
-        hits = _dedupe(points, len(points))
-        hits.sort(key=lambda h: (SEVERITY_ORDER.get(h.severity, 9), h.found_at))
-        hits = hits[:limit]
+        # Без смысловой части это выборка: худшие первыми. Порог
+        # релевантности здесь не при чём — фильтр уже отобрал всё, что нужно
+        hits = _worst(must, [level] if level else list(dojo.SEVERITIES), limit)
 
     if report:
         _enrich(hits)
 
-    return {
-        "product": name,
+    result = {
+        "product": name or "все продукты",
         "summary": counts(name, state),
         "applied_filters": applied,
         "hits": hits,
     }
+    if not name:
+        result["by_product"] = by_product(state)
+    return result

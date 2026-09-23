@@ -65,7 +65,7 @@ models:
 
   - name: BGE-M3 Embed
     provider: ollama
-    model: bge-m3:latest
+    model: bge-m3:567m
     apiBase: http://АДРЕС-OLLAMA:11434
     roles: [embed]
     requestOptions:

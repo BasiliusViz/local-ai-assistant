@@ -58,14 +58,14 @@ mcp = MCPServer(
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
 )
 def dojo_findings(
-    product: str,
+    product: str = "",
     status: str = "open",
     severity: str | None = None,
     query: str | None = None,
     limit: int = 25,
     response_format: str = "concise",
 ) -> dict:
-    """УЯЗВИМОСТИ ПРОДУКТА из DefectDojo: что нашли сканеры и что не закрыто.
+    """УЯЗВИМОСТИ ПРОДУКТОВ из DefectDojo: что нашли сканеры и что не закрыто.
 
     ВЫЗЫВАЙ ТОЛЬКО ЕСЛИ В СООБЩЕНИИ ЕСТЬ СЛОВО «defectdojo» ИЛИ «dojo»
     («дефектдоджо», «додж»). Вопрос про уязвимости сам по себе не повод: про
@@ -76,6 +76,12 @@ def dojo_findings(
     кладут только тему («инъекции», «устаревшие зависимости»), и только если
     она в вопросе есть. «Критичные по abinf» темы не содержит — query не нужен.
 
+    ПРОДУКТ — ТОЛЬКО ЕСЛИ ОН НАЗВАН В ВОПРОСЕ. Не назван — оставь product
+    пустым: поиск пойдёт по всем продуктам сразу и вернёт таблицу by_product
+    (сколько находок каждого уровня у каждого продукта). Не придумывай
+    продукт и не бери его из прошлых сообщений, если спрашивают «по всем»,
+    «вообще», «у нас».
+
     Примеры:
       «dojo что по продукту abinf»        -> product="abinf"
       «dojo критичные по abinf»           -> product="abinf", severity="критичные"
@@ -83,6 +89,10 @@ def dojo_findings(
       «dojo что по инъекциям в abinf»     -> product="abinf", query="инъекции"
       «dojo подготовь документ по abinf»  -> product="abinf",
                                              response_format="report"
+      «dojo общая картина»                -> без аргументов
+      «dojo какие продукты есть»          -> без аргументов, ответ — by_product
+      «dojo где у нас критичные»          -> severity="критичные"
+      «dojo где у нас log4j»              -> query="log4j"
 
     Про режим "report". По нему пишется документ: сводка по уровням, затем
     по каждой находке — в чём проблема, чем грозит, что предлагает сканер,
@@ -101,7 +111,8 @@ def dojo_findings(
     последней выгрузки, и предлагай проверить в самом DefectDojo.
 
     Args:
-        product: название продукта, можно неполно: "abinf"
+        product: название продукта, можно неполно: "abinf". Пусто — все
+            продукты
         status: "open" (по умолчанию), "принятые"/"accepted", "ложные",
             "закрытые"/"fixed" или "all" — все состояния
         severity: уровень — критичный, высокий, средний, низкий,
@@ -116,7 +127,8 @@ def dojo_findings(
 
     Returns:
         product, summary (счётчики по уровням), applied_filters и findings —
-        список находок со ссылками. В ответе ОБЯЗАТЕЛЬНО приводи ссылки: без
+        список находок со ссылками. Без продукта ещё by_product — таблица по
+        продуктам, и у каждой находки указан её продукт. В ответе ОБЯЗАТЕЛЬНО приводи ссылки: без
         них человеку некуда идти разбираться.
     """
     try:
@@ -140,18 +152,31 @@ def dojo_findings(
     detailed = response_format == "detailed"
     report = response_format == "report"
     hits = result["hits"]
-    return {
+    everywhere = "by_product" in result
+    out = {
         "product": result["product"],
         "summary": result["summary"],
         "applied_filters": result["applied_filters"],
-        "found": len(hits),
-        "findings": [h.as_dict(detailed=detailed, report=report) for h in hits],
-        "citation_instruction": (
-            "Начни со сводки по уровням, потом перечисли находки со ссылками. "
-            "Данные из индекса, а не из живого DefectDojo: если речь о "
-            "количестве открытых, оговори это и предложи свериться."
-        ),
     }
+    if everywhere:
+        out["by_product"] = result["by_product"]
+    out["found"] = len(hits)
+    out["findings"] = [
+        h.as_dict(detailed=detailed, report=report, with_product=everywhere)
+        for h in hits
+    ]
+    out["citation_instruction"] = (
+        (
+            "Начни с общей сводки по уровням, затем таблица by_product — "
+            "продукт и число находок каждого уровня, — затем находки со "
+            "ссылками, у каждой указан продукт. "
+            if everywhere
+            else "Начни со сводки по уровням, потом перечисли находки со ссылками. "
+        )
+        + "Данные из индекса, а не из живого DefectDojo: если речь о "
+        "количестве открытых, оговори это и предложи свериться."
+    )
+    return out
 
 
 def main() -> None:
