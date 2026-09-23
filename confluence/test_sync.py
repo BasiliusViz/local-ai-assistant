@@ -48,6 +48,7 @@ class SyncTest(unittest.TestCase):
         mock_server.PAGES[:] = copy.deepcopy(ORIGINAL_PAGES)
         mock_server.SPACES_FORBIDDEN = False
         mock_server.SEARCH_FORBIDDEN = False
+        mock_server.NO_TOTAL_SIZE = False
         self.out = Path(tempfile.mkdtemp(prefix="confluence-test-"))
 
     def tearDown(self):
@@ -195,6 +196,20 @@ class SyncTest(unittest.TestCase):
 
     def test_list_spaces_count(self):
         code, out = self.run_sync("--list-spaces", "--count")
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"OPS\s+5\s+Эксплуатация")
+        self.assertRegex(out, r"6\s+всего")
+
+    def test_count_one_request_per_space(self):
+        # totalSize есть — перебирать страницы незачем: по запросу на пространство
+        client = sync.Client(self.url, mock_server.TOKEN, page_size=1)
+        with mock.patch.object(client, "_paged", side_effect=AssertionError("перебор")):
+            self.assertEqual(client.count_pages("OPS"), 5)
+
+    def test_count_without_total_size(self):
+        # старый Confluence без totalSize — перебор, но число то же
+        mock_server.NO_TOTAL_SIZE = True
+        code, out = self.run_sync("--list-spaces", "--count", page_size="2")
         self.assertEqual(code, 0, out)
         self.assertRegex(out, r"OPS\s+5\s+Эксплуатация")
 

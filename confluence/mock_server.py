@@ -22,6 +22,8 @@ TOKEN = "test-token"
 SPACES_FORBIDDEN = False
 # Имитация закрытого поиска /rest/api/search (встречается реже)
 SEARCH_FORBIDDEN = False
+# Имитация старой версии Confluence без totalSize в ответе поиска
+NO_TOTAL_SIZE = False
 
 SPACES = [
     {"key": "DEV", "name": "Разработка", "type": "global"},
@@ -258,19 +260,26 @@ class Handler(BaseHTTPRequestHandler):
             expand = query.get("expand", [""])[0]
 
             m = re.search(r"ancestor\s*=\s*(\d+)", cql)
+            in_space = re.search(r'space\s*=\s*"([^"]+)"', cql)
             if m:
                 items = descendants_of(m.group(1))
+            elif in_space:
+                items = [p for p in PAGES if p["space"] == in_space.group(1)]
             elif re.fullmatch(r"\s*type\s*=\s*page\s*", cql):
                 items = list(PAGES)
             else:
                 items = []
             window = items[start : start + limit]
-            self._send(200, {
+            payload = {
                 "results": [page_json(p, "body" in expand) for p in window],
                 "start": start,
                 "limit": limit,
                 "size": len(window),
-            })
+            }
+            # Общее число — есть не во всех версиях Confluence
+            if not NO_TOTAL_SIZE:
+                payload["totalSize"] = len(items)
+            self._send(200, payload)
             return
 
         # одна страница по id

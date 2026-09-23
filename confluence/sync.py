@@ -231,6 +231,30 @@ class Client:
             ),
         )
 
+    def count_pages(self, key: str) -> int:
+        """Сколько страниц в пространстве — одним запросом, если получится.
+
+        Поиск отдаёт totalSize: одно обращение вместо перебора всех страниц
+        (на 19 тысячах это сотни запросов и минуты тишины). Нет поля или
+        поиск закрыт — перебираем список содержимого без тел и родителей.
+        """
+        try:
+            data = self.get(
+                "/rest/api/content/search",
+                cql=f'space="{key}" and type=page',
+                limit=1,
+            )
+            if "totalSize" in data:
+                return int(data["totalSize"])
+        except ConfluenceError:
+            pass
+        return sum(
+            1
+            for _ in self._paged(
+                "/rest/api/content", spaceKey=key, type="page", status="current"
+            )
+        )
+
     def spaces(self):
         """Все общие пространства. Личные (~логин) не берём: там черновики."""
         yield from self._paged("/rest/api/space", type="global", status="current")
@@ -308,7 +332,7 @@ def discover_spaces(client: Client, personal: bool) -> tuple[list[dict], str]:
         listed = list(client._paged("/rest/api/space", status="current", **params))
         return [s for s in listed if keep(s.get("key", ""))], "список пространств"
     except ConfluenceError as e:
-        print(f"Список пространств закрыт ({str(e).splitlines()[0]}), пробую поиск...")
+        print(f"Список пространств закрыт ({str(e).splitlines()[0]}), пробую поиск...", flush=True)
 
     try:
         found: dict[str, dict] = {}
@@ -319,7 +343,11 @@ def discover_spaces(client: Client, personal: bool) -> tuple[list[dict], str]:
                 found[key] = {"key": key, "name": space.get("name") or item.get("title", "")}
         return list(found.values()), "поиск CQL"
     except ConfluenceError as e:
-        print(f"Поиск закрыт ({str(e).splitlines()[0]}), обхожу страницы...")
+        print(
+            f"Поиск закрыт ({str(e).splitlines()[0]}), обхожу страницы "
+            f"(до {SCAN_PAGES_LIMIT}, это может занять несколько минут)...",
+            flush=True,
+        )
 
     found = {}
     pages = client._paged("/rest/api/content/search", cql="type=page", expand="space")
@@ -345,24 +373,29 @@ def list_spaces(client: Client, personal: bool, count: bool) -> int:
         return 1
 
     spaces.sort(key=lambda s: s.get("key", "").casefold())
-    print(f"\nДоступно пространств: {len(spaces)} (способ: {how})\n")
+    print(f"\nДоступно пространств: {len(spaces)} (способ: {how})\n", flush=True)
     if not spaces:
         print("Токен не видит ни одного пространства — проверьте его права.")
         return 1
 
     width = max(len("КЛЮЧ"), *(len(s.get("key", "")) for s in spaces))
     print(f"  {'КЛЮЧ':{width}}  {'СТРАНИЦ':>7}  НАЗВАНИЕ" if count else f"  {'КЛЮЧ':{width}}  НАЗВАНИЕ")
+    total = 0
     for s in spaces:
         key = s.get("key", "")
         if count:
             try:
-                pages = sum(1 for _ in client.space_pages(key, with_body=False))
+                pages = client.count_pages(key)
+                total += pages
                 shown = str(pages)
             except ConfluenceError:
                 shown = "нет доступа"
-            print(f"  {key:{width}}  {shown:>7}  {s.get('name', '')}")
+            # flush: строка должна появиться сразу, а не после всех подсчётов
+            print(f"  {key:{width}}  {shown:>7}  {s.get('name', '')}", flush=True)
         else:
             print(f"  {key:{width}}  {s.get('name', '')}")
+    if count:
+        print(f"  {'':{width}}  {total:>7}  всего")
 
     print("\nСтрока для .env со всеми показанными — лишние удалить:")
     print("  CONFLUENCE_SPACES=" + ",".join(s.get("key", "") for s in spaces))
