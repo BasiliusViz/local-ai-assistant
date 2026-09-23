@@ -206,13 +206,22 @@ def normalize_status(value: str) -> str:
     )
 
 
+def levels() -> list[str]:
+    """Уровни, которые есть в индексе: DOJO_INDEX_SEVERITIES или все.
+
+    Без этого «общая картина» показала бы «средних: 0», хотя их просто не
+    индексировали — для отчёта по безопасности это прямая неправда.
+    """
+    return dojo.index_severities() or list(dojo.SEVERITIES)
+
+
 def counts(product: str | None, status: str | None) -> dict:
     """Сводка по уровням. Считаем запросами, а не выгрузкой находок.
 
     product=None — по всем продуктам сразу.
     """
     out = {}
-    for severity in dojo.SEVERITIES:
+    for severity in levels():
         must = [
             models.FieldCondition(key="source", match=models.MatchValue(value=SOURCE))
         ]
@@ -260,7 +269,7 @@ def by_product(status: str | None) -> list[dict]:
     for name in values("product"):
         c = counts(name, status)
         rows.append({"product": name, "total": sum(c.values()), **c})
-    rows.sort(key=lambda r: tuple(-r[s] for s in dojo.SEVERITIES) + (r["product"],))
+    rows.sort(key=lambda r: tuple(-r.get(s, 0) for s in levels()) + (r["product"],))
     return rows
 
 
@@ -413,6 +422,12 @@ def search(
     name = None if wants_all(product) else resolve_product(product or "")
     state = normalize_status(status) if status and status != "all" else None
     level = dojo.normalize_severity(severity) if severity else None
+    if level and level not in levels():
+        raise DojoSearchError(
+            f"Уровень {level} не индексируется: в поиске только "
+            f"{', '.join(levels())} (DOJO_INDEX_SEVERITIES). Посмотреть его можно "
+            "в самом DefectDojo или через engagement — там данные живые."
+        )
 
     must = [
         models.FieldCondition(key="source", match=models.MatchValue(value=SOURCE))
@@ -464,7 +479,7 @@ def search(
     else:
         # Без смысловой части это выборка: худшие первыми. Порог
         # релевантности здесь не при чём — фильтр уже отобрал всё, что нужно
-        hits = _worst(must, [level] if level else list(dojo.SEVERITIES), limit)
+        hits = _worst(must, [level] if level else levels(), limit)
 
     if report:
         _enrich(hits)
@@ -472,6 +487,7 @@ def search(
     result = {
         "product": name or "все продукты",
         "summary": counts(name, state),
+        "indexed_levels": levels(),
         "applied_filters": applied,
         "hits": hits,
     }

@@ -196,6 +196,13 @@ def dojo_findings(
         + "Данные из индекса, а не из живого DefectDojo: если речь о "
         "количестве открытых, оговори это и предложи свериться."
     )
+    indexed = result.get("indexed_levels") or []
+    if len(indexed) < len(dojo.SEVERITIES):
+        out["indexed_levels"] = indexed
+        out["citation_instruction"] += (
+            f" В индексе только уровни {', '.join(indexed)}: скажи об этом, "
+            "остальных уровней в сводке нет не потому, что их ноль."
+        )
     return out
 
 

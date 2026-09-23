@@ -288,25 +288,58 @@ def finding_status(item: dict) -> str:
     return "inactive"
 
 
-def all_findings(client: httpx.Client, product_id: int):
+def index_severities() -> list[str]:
+    """DOJO_INDEX_SEVERITIES: какие уровни класть в индекс. Пусто — все."""
+    raw = os.getenv("DOJO_INDEX_SEVERITIES", "")
+    return [normalize_severity(s) for s in raw.split(",") if s.strip()]
+
+
+# Как состояния пишут в DOJO_INDEX_STATUS -> значение finding_status()
+INDEX_STATUS_NAMES = {
+    "open": "open",
+    "accepted": "accepted",
+    "fixed": "fixed",
+    "false_positive": "false_positive",
+    "inactive": "inactive",
+}
+
+
+def index_statuses() -> list[str]:
+    """DOJO_INDEX_STATUS: какие состояния класть в индекс. Пусто — все."""
+    out = []
+    for value in os.getenv("DOJO_INDEX_STATUS", "").split(","):
+        key = value.strip().casefold()
+        if not key:
+            continue
+        if key not in INDEX_STATUS_NAMES:
+            raise DojoError(
+                f"DOJO_INDEX_STATUS: «{value.strip()}» непонятно. Бывают: "
+                + ", ".join(INDEX_STATUS_NAMES)
+            )
+        out.append(INDEX_STATUS_NAMES[key])
+    return out
+
+
+def all_findings(client: httpx.Client, product_id: int, severity: str | None = None):
     """Все находки продукта, постранично. Для индексатора.
 
     Дубликаты пропускаем: DefectDojo помечает их сам, и в индексе они дали бы
-    по нескольку одинаковых ответов на один вопрос.
+    по нескольку одинаковых ответов на один вопрос. severity отбирает уровень
+    на стороне DefectDojo: при десятках тысяч находок тянуть всё, чтобы
+    выкинуть большую часть у себя, — это сотни лишних запросов.
     """
     offset = 0
     while True:
-        data = _get(
-            client,
-            "/findings/",
-            **{
-                "test__engagement__product": product_id,
-                "duplicate": "false",
-                "limit": PAGE_SIZE,
-                "offset": offset,
-                "ordering": "id",
-            },
-        )
+        params = {
+            "test__engagement__product": product_id,
+            "duplicate": "false",
+            "limit": PAGE_SIZE,
+            "offset": offset,
+            "ordering": "id",
+        }
+        if severity:
+            params["severity"] = severity
+        data = _get(client, "/findings/", **params)
         results = data.get("results", [])
         for item in results:
             yield item

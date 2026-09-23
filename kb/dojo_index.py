@@ -38,8 +38,17 @@ from pathlib import Path
 from qdrant_client import QdrantClient, models
 
 from kb import config, dojo
-from kb.doc_index import ensure_collection, load_state, point_id, save_state
-from kb.embedder import embed_batch
+from kb.doc_index import (
+    MAX_FAILS_IN_ROW,
+    ensure_collection,
+    load_state,
+    point_id,
+    save_state,
+)
+from kb.embedder import EmbedError, embed_batch
+
+# Как часто сохранять состояние по ходу прогона, в находках
+CHECKPOINT_EVERY = 500
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +163,15 @@ def fetch(dump_to: Path | None = None) -> list[dict]:
         return []
 
     records: list[dict] = []
+    severities = dojo.index_severities()
+    statuses = dojo.index_statuses()
+    print(
+        "В индекс: уровни "
+        + (", ".join(severities) if severities else "все")
+        + "; состояния "
+        + (", ".join(statuses) if statuses else "все")
+        + " (DOJO_INDEX_SEVERITIES, DOJO_INDEX_STATUS)"
+    )
     with dojo._client() as client:
         visible = dojo.products(client)
         if not visible:
@@ -163,8 +181,15 @@ def fetch(dump_to: Path | None = None) -> list[dict]:
         print(f"Продуктов: {len(visible)}")
         for product in visible:
             name = product.get("name", "")
-            got = [normalize(item, name) for item in dojo.all_findings(client, product["id"])]
-            print(f"    {name:30} находок: {len(got)}")
+            # Уровень отбирает сам DefectDojo — лишнее даже не скачивается.
+            # Состояние — у нас: его в DefectDojo задают четыре флага сразу
+            items = []
+            for severity in severities or [None]:
+                items += dojo.all_findings(client, product["id"], severity)
+            got = [normalize(item, name) for item in items]
+            if statuses:
+                got = [r for r in got if r["status"] in statuses]
+            print(f"    {name:30} находок: {len(got)}", flush=True)
             records.extend(got)
 
             if dump_to:
@@ -328,13 +353,22 @@ def index(
     skipped = 0
     stats = {"новых": 0, "обновлено": 0}
 
+    failed: list[str] = []
+    fails_in_row = 0
+
     for number, record in enumerate(records, 1):
+        # Промежуточное сохранение, как в doc_index: на десятках тысяч находок
+        # оборванный прогон иначе начинался бы с нуля. В начале итерации —
+        # всё до текущей находки обработано целиком
+        if not dry_run and number > 1 and (number - 1) % CHECKPOINT_EVERY == 0:
+            save_state(state_path, {**previous, **current}, DOJO_CHUNKER_VERSION)
+
         fid = str(record["id"])
         stamp = digest(record)
         current[fid] = stamp
 
         if not dry_run and (number % 100 == 0 or number == len(records)):
-            print(f"[{number}/{len(records)}]")
+            print(f"[{number}/{len(records)}]", flush=True)
 
         # Ничего не поменялось — векторы в базе актуальны. На прогоне по
         # расписанию это почти все находки
@@ -359,13 +393,35 @@ def index(
 
         title = f"{record['id']} · {record['title']}"
         vectors: list = []
-        for start in range(0, len(pieces), batch):
-            # Заголовок находки приклеивается к каждому куску: «Как чинить»
-            # без него не найдётся — в тексте рекомендации самой уязвимости
-            # обычно не названо
-            vectors.extend(
-                embed_batch([f"{title}\n\n{p}" for p in pieces[start : start + batch]])
-            )
+        try:
+            for start in range(0, len(pieces), batch):
+                # Заголовок находки приклеивается к каждому куску: «Как чинить»
+                # без него не найдётся — в тексте рекомендации самой уязвимости
+                # обычно не названо
+                vectors.extend(
+                    embed_batch([f"{title}\n\n{p}" for p in pieces[start : start + batch]])
+                )
+        except EmbedError as e:
+            # Одна находка не роняет прогон на десятки тысяч: пропускаем, в
+            # состоянии оставляем прежний отпечаток — следующий прогон повторит,
+            # а старая версия находки остаётся в поиске
+            failed.append(fid)
+            fails_in_row += 1
+            print(f"  [!] находка {fid}: эмбеддинги не получены, пропускаю — {e}")
+            if fid in previous:
+                current[fid] = previous[fid]
+            else:
+                current.pop(fid, None)
+            if fails_in_row >= MAX_FAILS_IN_ROW:
+                save_state(state_path, {**previous, **current}, DOJO_CHUNKER_VERSION)
+                print(
+                    f"\n{fails_in_row} находок подряд без эмбеддингов — похоже, "
+                    "эмбеддер недоступен. Останавливаюсь; сделанное сохранено, "
+                    "следующий запуск продолжит."
+                )
+                return -1
+            continue
+        fails_in_row = 0
 
         # Сначала векторы, потом замена. Если эмбеддер упадёт, находка
         # останется в базе в прежнем виде, а не исчезнет. Старые точки удаляем
@@ -417,6 +473,12 @@ def index(
     if gone:
         print(f"Пропало из DefectDojo и убрано из индекса: {len(gone)}")
     print(f"Всего в коллекции {collection}: {info.points_count}")
+    if failed:
+        print(
+            f"Не посчитано (повторятся в следующий прогон): {len(failed)} — "
+            + ", ".join(failed[:20])
+            + (" ..." if len(failed) > 20 else "")
+        )
     return total
 
 
@@ -477,7 +539,7 @@ def main() -> int:
     state_path = Path(args.state)
     if not args.dry_run:
         state_path.parent.mkdir(parents=True, exist_ok=True)
-    index(
+    done = index(
         records,
         args.collection,
         args.batch,
@@ -486,7 +548,8 @@ def main() -> int:
         args.force_prune,
         args.dry_run,
     )
-    return 0
+    # -1 — остановились: эмбеддер лёг. Код возврата нужен расписанию
+    return 1 if done < 0 else 0
 
 
 if __name__ == "__main__":

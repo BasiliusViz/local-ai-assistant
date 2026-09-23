@@ -235,6 +235,25 @@ class DojoRetrieverTest(unittest.TestCase):
         out = dojo_server.dojo_findings(severity="критичные", response_format="report")
         self.assertTrue(all(f["mitigation"].startswith("как чинить") for f in out["findings"]))
 
+    # --- в индексе только часть уровней (DOJO_INDEX_SEVERITIES)
+
+    def test_summary_only_indexed_levels(self):
+        from kb import dojo_server
+
+        with mock.patch.dict(os.environ, {"DOJO_INDEX_SEVERITIES": "Critical,High"}):
+            out = dojo_server.dojo_findings()
+        # «средних: 0» было бы неправдой — их просто не индексировали
+        self.assertEqual(list(out["summary"]), ["Critical", "High"])
+        self.assertEqual(out["indexed_levels"], ["Critical", "High"])
+        self.assertIn("только уровни", out["citation_instruction"])
+
+    def test_not_indexed_level_explained(self):
+        from kb import dojo_server
+
+        with mock.patch.dict(os.environ, {"DOJO_INDEX_SEVERITIES": "Critical,High"}):
+            out = dojo_server.dojo_findings(severity="средние")
+        self.assertIn("не индексируется", out["error"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
