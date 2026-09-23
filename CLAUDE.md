@@ -80,6 +80,7 @@ kb/          MCP-серверы и индексаторы (Python)
   *_retriever.py       поиск по своему источнику
   dojo.py, report.py   клиент DefectDojo; HTML-отчёт по уязвимостям
   dojo_compare.py      ветки (engagement): список, одна, сравнение двух — живым API
+  release_notes.py     release notes по устранённым уязвимостям (сравнение engagement'ов)
   reranker.py          реранкер (выключен)
   test_*.py            тесты; eval.py, smoke_client.py, tool_call_test.py,
                        auth_probe.py — ручные проверки, прод их не вызывает

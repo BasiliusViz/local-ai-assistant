@@ -115,6 +115,13 @@ def _card(item: dict) -> dict:
     }
     if where:
         out["location"] = where
+    if item.get("cwe"):
+        out["cwe"] = f"CWE-{item['cwe']}"
+    component = " ".join(
+        filter(None, [item.get("component_name") or "", item.get("component_version") or ""])
+    ).strip()
+    if component:
+        out["component"] = component
     return out
 
 
