@@ -80,9 +80,8 @@ class ReleaseNotesTest(unittest.TestCase):
     def test_tool_release_notes(self):
         from kb import dojo_server
 
-        out = dojo_server.dojo_findings(
-            product="abinf", engagement="main", compare_with="feature-x",
-            response_format="release_notes",
+        out = dojo_server.dojo_release_notes(
+            product="abinf", base="main", target="feature-x"
         )
         self.assertNotIn("error", out)
         self.assertIn("**Устранено: 1 уязвимость**", out["release_notes"])
@@ -91,19 +90,17 @@ class ReleaseNotesTest(unittest.TestCase):
     def test_tool_release_notes_levels_in_words(self):
         from kb import dojo_server
 
-        out = dojo_server.dojo_findings(
-            product="abinf", engagement="main", compare_with="feature-x",
-            response_format="release_notes", severity="критичные и высокие",
+        out = dojo_server.dojo_release_notes(
+            product="abinf", base="main", target="feature-x",
+            severity="критичные и высокие",
         )
         self.assertIn("Учтены уровни: критичные, высокие.", out["release_notes"])
 
-    def test_tool_release_notes_needs_two(self):
+    def test_tool_release_notes_unknown_engagement(self):
         from kb import dojo_server
 
-        out = dojo_server.dojo_findings(
-            product="abinf", engagement="main", response_format="release_notes"
-        )
-        self.assertIn("два engagement", out["error"])
+        out = dojo_server.dojo_release_notes(product="abinf", base="release", target="main")
+        self.assertIn("Есть: main_abinf", out["error"])
 
     def test_chat_list_capped(self):
         from kb import dojo_compare

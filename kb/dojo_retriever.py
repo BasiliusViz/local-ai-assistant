@@ -457,8 +457,8 @@ def search(
                 f"Продукт {live} есть в DefectDojo, но в индексе по нему нет "
                 f"находок уровней {', '.join(levels())} (в индекс идут только "
                 "они). Engagement'ы, сравнение и release notes по нему работают: "
-                "они берут данные из DefectDojo напрямую — вызови dojo_findings "
-                "с engagement."
+                "они берут данные из DefectDojo напрямую — dojo_engagements, "
+                "dojo_compare, dojo_release_notes."
             ),
         }
     state = normalize_status(status) if status and status != "all" else None
@@ -467,7 +467,7 @@ def search(
         raise DojoSearchError(
             f"Уровень {level} не индексируется: в поиске только "
             f"{', '.join(levels())} (DOJO_INDEX_SEVERITIES). Посмотреть его можно "
-            "в самом DefectDojo или через engagement — там данные живые."
+            "в самом DefectDojo или через dojo_compare — там данные живые."
         )
 
     must = [

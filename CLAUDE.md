@@ -31,7 +31,7 @@
 | `qdrant` | 6333 | векторная база: `knowledge` (документы, Jira, Dojo), `code` |
 | `kb` | 8010 | MCP: `kb_search` (документы), `code_search` (код), `jira_search` |
 | `code-graph` | 8011 | MCP Graphify: граф вызовов кода (кто вызывает, что сломается) |
-| `dojo` | 8012 | MCP: `dojo_findings`. Отдельный порт ради доступа: только AppSec |
+| `dojo` | 8012 | MCP: `dojo_findings`, `dojo_engagements`, `dojo_compare`, `dojo_release_notes`. Отдельный порт ради доступа: только AppSec |
 | `reranker` | 8081 | выключен, профиль `quality` |
 
 Ollama стек **не разворачивает**. Видеокарта серверу не нужна.
@@ -71,7 +71,8 @@ continue-rules.yaml              правила для модели (когда 
 
 kb/          MCP-серверы и индексаторы (Python)
   server.py            :8010 — kb_search, code_search, jira_search
-  dojo_server.py       :8012 — dojo_findings
+  dojo_server.py       :8012 — dojo_findings (индекс), dojo_engagements, dojo_compare,
+                       dojo_release_notes (живой API)
   config.py            все пороги и переменные
   embedder.py          эмбеддинги через /v1 или native (OLLAMA_API)
   retriever.py         поиск по документам; expander.py — переформулировка запроса
@@ -82,6 +83,7 @@ kb/          MCP-серверы и индексаторы (Python)
   dojo_compare.py      ветки (engagement): список, одна, сравнение двух — живым API
   release_notes.py     release notes по устранённым уязвимостям (сравнение engagement'ов)
   reranker.py          реранкер (выключен)
+  dojo_tool_eval.py    замер: выбирает ли модель нужный инструмент Dojo и поля
   test_*.py            тесты; eval.py, smoke_client.py, tool_call_test.py,
                        auth_probe.py — ручные проверки, прод их не вызывает
 confluence/  sync.py, конвертер storage->md, заглушка сервера, тесты, cron.sh

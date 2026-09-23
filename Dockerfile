@@ -30,6 +30,9 @@ COPY jira/ ./jira/
 # docker compose exec kb python selftest.py, а без этой строки файла в образе
 # нет и команда падает с "No such file or directory"
 COPY selftest.py ./
+# Правила Continue — для замера выбора инструментов (kb.dojo_tool_eval):
+# модель должна видеть ровно тот системный промпт, что в Continue
+COPY continue-rules.yaml ./
 
 # Внутри контейнера localhost - это сам контейнер, а не хост.
 # Соседние сервисы доступны по именам из compose.

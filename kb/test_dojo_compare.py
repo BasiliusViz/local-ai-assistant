@@ -145,24 +145,44 @@ class CompareTest(unittest.TestCase):
     def test_tool_compare(self):
         from kb import dojo_server
 
-        out = dojo_server.dojo_findings(
-            product="abinf", engagement="main", compare_with="feature-x"
-        )
+        out = dojo_server.dojo_compare(product="abinf", base="main", target="feature-x")
         self.assertNotIn("error", out)
-        self.assertEqual(self.ids(out["only_in_second"]), [12])
-        self.assertIn("only_in_second", out["citation_instruction"])
+        self.assertEqual(self.ids(out["new_in_target"]), [12])
+        self.assertEqual(self.ids(out["fixed_in_target"]), [2])
+        self.assertEqual(self.ids(out["still_open"]), [11, 13])
+        self.assertIn("fixed_in_target", out["citation_instruction"])
+
+    def test_tool_compare_severity_in_words(self):
+        from kb import dojo_server
+
+        out = dojo_server.dojo_compare(
+            product="abinf", base="main", target="feature-x", severity="высокие и средние"
+        )
+        self.assertEqual(out["new_in_target"]["total"], 0)  # новая — критичная
+        self.assertEqual(self.ids(out["still_open"]), [11, 13])
+
+    def test_tool_null_severity_is_no_filter(self):
+        # qwen3 на замере передала severity="null" строкой
+        from kb import dojo_server
+
+        for blank in ("null", "None", "", "все"):
+            out = dojo_server.dojo_compare(
+                product="abinf", base="main", target="feature-x", severity=blank
+            )
+            self.assertNotIn("error", out, blank)
+            self.assertEqual(self.ids(out["new_in_target"]), [12], blank)
 
     def test_tool_list(self):
         from kb import dojo_server
 
-        out = dojo_server.dojo_findings(product="abinf", engagement="*")
+        out = dojo_server.dojo_engagements(product="abinf")
         self.assertEqual(len(out["engagements"]), 5)
 
     def test_tool_needs_product(self):
         from kb import dojo_server
 
-        out = dojo_server.dojo_findings(engagement="main", compare_with="feature-x")
-        self.assertIn("нужен продукт", out["error"])
+        out = dojo_server.dojo_compare(product="", base="main", target="feature-x")
+        self.assertIn("Нужен продукт", out["error"])
 
 
 if __name__ == "__main__":

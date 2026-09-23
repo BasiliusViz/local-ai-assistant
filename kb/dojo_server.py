@@ -31,7 +31,8 @@ import sys
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
-from kb import dojo, dojo_compare, dojo_retriever, release_notes
+from kb import dojo, dojo_retriever, release_notes
+from kb import dojo_compare as compare_mod
 from kb.embedder import EmbedError
 
 logging.basicConfig(
@@ -54,116 +55,65 @@ mcp = MCPServer(
 )
 
 
-@mcp.tool(
-    annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
-)
+RO = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+
+# Что модель кладёт в необязательное поле, когда фильтра нет. Замер показал:
+# qwen3 передаёт "null" строкой, и уровень «null» давал ошибку вместо ответа,
+# а query "null" ушёл бы в смысловой поиск
+BLANK = {"", "null", "none", "nil", "undefined", "*", "all", "any", "все", "всё", "любой", "любые"}
+
+
+def _clean(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return None if value.strip().casefold() in BLANK else value.strip()
+
+# Описания короткие намеренно. Раньше всё было одним инструментом с восемью
+# полями и полутора экранами оговорок, и qwen3.6:35b находила его, заполняла
+# знакомые поля (продукт, статус) — и не догадывалась про engagement. Одна
+# задача — один инструмент с понятным именем: выбрать dojo_compare на
+# «сравни» модели проще, чем вспомнить комбинацию полей.
+
+
+@mcp.tool(annotations=RO)
 def dojo_findings(
     product: str = "",
-    status: str = "open",
     severity: str | None = None,
+    status: str = "open",
     query: str | None = None,
     limit: int = 25,
     response_format: str = "concise",
-    engagement: str = "",
-    compare_with: str = "",
 ) -> dict:
-    """УЯЗВИМОСТИ ПРОДУКТОВ из DefectDojo: что нашли сканеры и что не закрыто.
+    """Находки DefectDojo по продукту или по всем: что нашли сканеры, сколько
+    каких уровней. Только при слове «dojo»/«defectdojo» в сообщении.
 
-    ВЫЗЫВАЙ ТОЛЬКО ЕСЛИ В СООБЩЕНИИ ЕСТЬ СЛОВО «defectdojo» ИЛИ «dojo»
-    («дефектдоджо», «додж»). Вопрос про уязвимости сам по себе не повод: про
-    требования и регламенты безопасности отвечает kb_search, а тут лежат
-    находки сканеров по конкретным продуктам.
+    НЕ для engagement'ов: список — dojo_engagements, сравнение двух —
+    dojo_compare, release notes — dojo_release_notes.
 
-    Продукт, состояние и уровень — ЭТО ФИЛЬТРЫ, отдельные аргументы. В query
-    кладут только тему («инъекции», «устаревшие зависимости»), и только если
-    она в вопросе есть. «Критичные по abinf» темы не содержит — query не нужен.
+    product — только если назван в вопросе; не назван — пусто, ответ по всем
+    продуктам (таблица by_product). severity и status — отдельные поля, в
+    query только тема («инъекции», «log4j»), если она есть в вопросе.
+    Примеры: «dojo критичные в abinf» -> product="abinf", severity="критичные";
+    «dojo общая картина» -> без аргументов; «dojo где у нас log4j» -> query="log4j";
+    «dojo подготовь документ по abinf» -> product="abinf", response_format="report".
 
-    ПРОДУКТ — ТОЛЬКО ЕСЛИ ОН НАЗВАН В ВОПРОСЕ. Не назван — оставь product
-    пустым: поиск пойдёт по всем продуктам сразу и вернёт таблицу by_product
-    (сколько находок каждого уровня у каждого продукта). Не придумывай
-    продукт и не бери его из прошлых сообщений, если спрашивают «по всем»,
-    «вообще», «у нас».
-
-    Примеры:
-      «dojo что по продукту abinf»        -> product="abinf"
-      «dojo критичные по abinf»           -> product="abinf", severity="критичные"
-      «dojo что приняли как риск в abinf» -> product="abinf", status="принятые"
-      «dojo что по инъекциям в abinf»     -> product="abinf", query="инъекции"
-      «dojo подготовь документ по abinf»  -> product="abinf",
-                                             response_format="report"
-      «dojo общая картина»                -> без аргументов
-      «dojo какие продукты есть»          -> без аргументов, ответ — by_product
-      «dojo где у нас критичные»          -> severity="критичные"
-      «dojo где у нас log4j»              -> query="log4j"
-
-    ВЕТКИ (engagement). У продукта engagement'ы называются «ветка_продукт»
-    (main_abinf, feature-x_abinf); ветку называй коротко, как в вопросе.
-    Нужен product. Это живой запрос в DefectDojo, не индекс; query с ним не
-    работает, status и severity — работают. Про engagement, сравнение и
-    release notes вызывай СРАЗУ с engagement — не проверяй продукт отдельным
-    вызовом без engagement: в индексе продукта может не быть (там только
-    часть уровней), а в DefectDojo он есть.
-      «dojo какие ветки есть в abinf»           -> product="abinf", engagement="*"
-      «dojo что в ветке feature-x в abinf»      -> product="abinf",
-                                                   engagement="feature-x"
-      «dojo сделай release notes по устранённым между release-1.1 и release-1.2 в abinf»
-                                                -> product="abinf", engagement="release-1.1",
-                                                   compare_with="release-1.2",
-                                                   response_format="release_notes"
-                                                   (severity — если просят только часть
-                                                   уровней: "критичные и высокие")
-      «dojo сравни ветки main и feature-x в abinf»
-                                                -> product="abinf", engagement="main",
-                                                   compare_with="feature-x"
-    Сравнение возвращает три группы: only_in_second (появилось во второй
-    ветке), only_in_first (есть в первой, во второй нет — исправлено или не
-    найдено), in_both. У каждой сводка по уровням. Отвечай по этим группам и
-    в этом порядке: сначала новое — ради него обычно и сравнивают.
-
-    Про режим "report". По нему пишется документ: сводка по уровням, затем
-    по каждой находке — в чём проблема, чем грозит, что предлагает сканер,
-    где в коде и ссылка на проверку. Бери текст ИЗ ПОЛЕЙ description,
-    impact и mitigation, а не из своих знаний: там написано то, что нашёл
-    конкретный сканер в конкретном месте. Ответ длинный, поэтому при
-    просьбе сделать документ разумно сузить отбор — например только
-    критичные и высокие.
-
-    Сводка по уровням возвращается ВСЕГДА, даже если спросили про один: «три
-    критичных» без общей картины вводит в заблуждение — непонятно, три из трёх
-    это или три из сорока. Начинай ответ со сводки, потом сами находки.
-
-    ДАННЫЕ — СНИМОК ИНДЕКСА, а не живой DefectDojo. Находки меняются каждый
-    день, поэтому если речь о количестве открытых, добавляй, что это по данным
-    последней выгрузки, и предлагай проверить в самом DefectDojo.
+    Данные — индекс, обновляется раз в два часа. Начинай ответ со сводки по
+    уровням, у каждой находки давай ссылку.
 
     Args:
-        product: название продукта, можно неполно: "abinf". Пусто — все
-            продукты
-        status: "open" (по умолчанию), "принятые"/"accepted", "ложные",
-            "закрытые"/"fixed" или "all" — все состояния
-        severity: уровень — критичный, высокий, средний, низкий,
-            информационный. Без него вернутся все
-        query: тема, если она есть в вопросе. Ищет по описаниям находок и
-            рекомендациям по устранению
-        limit: сколько находок показать, по умолчанию 25
-        response_format: "concise" (по умолчанию) — номер, заголовок, уровень,
-            статус, ссылка. "detailed" — плюс сканер, CWE, дата и найденный
-            фрагмент. "report" — всё для документа: описание проблемы, чем
-            грозит и что предлагает сканер для исправления. "release_notes" —
-            только с engagement и compare_with: готовый документ по
-            устранённым уязвимостям, выводить дословно
-
-    Returns:
-        product, summary (счётчики по уровням), applied_filters и findings —
-        список находок со ссылками. Без продукта ещё by_product — таблица по
-        продуктам, и у каждой находки указан её продукт. В ответе ОБЯЗАТЕЛЬНО приводи ссылки: без
-        них человеку некуда идти разбираться.
+        product: продукт, можно неполно: "abinf". Пусто — все продукты
+        severity: критичный, высокий, средний, низкий, информационный
+        status: "open" (по умолчанию), "принятые", "ложные", "закрытые", "all"
+        query: тема, только если она есть в вопросе
+        limit: сколько находок показать
+        response_format: "concise", "detailed" или "report" (для документа:
+            описание, чем грозит, как исправить — бери текст из этих полей)
     """
-    if engagement.strip() or compare_with.strip():
-        return engagement_mode(
-            product, engagement, compare_with, status, severity, limit, response_format
-        )
-
+    severity, query = _clean(severity), _clean(query)
+    # У статуса «all»/«все» — осмысленное значение (все состояния), его не
+    # чистим; пустышки — это «по умолчанию», то есть открытые
+    if not status or status.strip().casefold() in {"", "null", "none", "nil", "undefined"}:
+        status = "open"
     try:
         result = dojo_retriever.search(
             product=product,
@@ -217,7 +167,7 @@ def dojo_findings(
             "Перескажи поле note: продукт СУЩЕСТВУЕТ, в индексе по нему нет "
             "находок индексируемых уровней. Не говори, что продукта нет. Если "
             "спрашивали про engagement, сравнение или release notes — вызови "
-            "dojo_findings ещё раз с engagement."
+            "dojo_engagements, dojo_compare или dojo_release_notes."
         )
     indexed = result.get("indexed_levels") or []
     if len(indexed) < len(dojo.SEVERITIES):
@@ -229,78 +179,133 @@ def dojo_findings(
     return out
 
 
-def engagement_mode(
-    product: str,
-    engagement: str,
-    compare_with: str,
-    status: str | None,
-    severity: str | None,
-    limit: int,
-    response_format: str = "concise",
-) -> dict:
-    """Ветки продукта: список, одна ветка или сравнение двух — живым запросом."""
+def _live(product: str) -> dict | None:
+    """Ошибка, если живой запрос к DefectDojo сделать нельзя, иначе None."""
     if not dojo.configured():
-        return {
-            "error": "Ветки смотрятся живым запросом в DefectDojo, а у сервера "
-            "не заданы DOJO_URL и DOJO_TOKEN."
-        }
+        return {"error": "У сервера не заданы DOJO_URL и DOJO_TOKEN."}
     if dojo_retriever.wants_all(product):
         return {
-            "error": "Для веток нужен продукт: engagement'ы принадлежат "
-            "продукту. Спроси, какой продукт имеется в виду."
+            "error": "Нужен продукт: engagement'ы принадлежат продукту. Спроси, "
+            "какой продукт имеется в виду."
         }
-    first, second = engagement.strip(), compare_with.strip()
-    if not first:
-        first, second = second, ""
-    if response_format == "release_notes":
-        if not second:
-            return {
-                "error": "Для release notes нужны два engagement'а: прошлый "
-                "релиз (engagement) и новый (compare_with)."
-            }
-        try:
-            text, _ = release_notes.build(
-                product, first, second, severity, max_items=CHAT_NOTES_ITEMS
-            )
-        except dojo.DojoError as e:
-            return {"error": str(e)}
-        except Exception as e:
-            return {"error": f"Запрос к DefectDojo не удался: {e}"}
-        return {
-            "release_notes": text,
-            "citation_instruction": (
-                "Выведи поле release_notes ДОСЛОВНО, markdown как есть: это "
-                "документ для релиза, собранный из данных DefectDojo. Ничего не "
-                "пересказывай, не добавляй и не убирай."
-            ),
-        }
+    return None
+
+
+@mcp.tool(annotations=RO)
+def dojo_engagements(product: str) -> dict:
+    """Список engagement'ов продукта в DefectDojo: названия, статус, дата.
+    Только при слове «dojo»/«defectdojo». Engagement у нас — ветка или релиз,
+    название вида «ветка_продукт». Зови, чтобы узнать точные названия перед
+    сравнением. Пример: «dojo какие engagement есть в abinf» -> product="abinf".
+
+    Args:
+        product: продукт, можно неполно: "abinf"
+    """
+    if err := _live(product):
+        return err
     try:
-        state = (
-            dojo_retriever.normalize_status(status)
-            if status and status != "all"
-            else None
-        )
-        level = dojo.normalize_severity(severity) if severity else None
-        if _norm(first) in dojo_compare.ALL:
-            return dojo_compare.list_engagements(product)
-        if second:
-            result = dojo_compare.compare(product, first, second, state, level, limit)
-            result["citation_instruction"] = (
-                "Ответь по трём группам: сначала only_in_second — что появилось "
-                "во второй ветке, затем only_in_first — что было в первой и во "
-                "второй не найдено, затем in_both. Для каждой — сводка по "
-                "уровням и находки со ссылками. Данные живые, из DefectDojo."
-            )
-            return result
-        return dojo_compare.one(product, first, state, level, limit)
-    except (dojo.DojoError, dojo_retriever.DojoSearchError) as e:
+        return compare_mod.list_engagements(product)
+    except dojo.DojoError as e:
         return {"error": str(e)}
     except Exception as e:
         return {"error": f"Запрос к DefectDojo не удался: {e}"}
 
 
-def _norm(text: str) -> str:
-    return text.strip().casefold()
+@mcp.tool(annotations=RO)
+def dojo_compare(
+    product: str, base: str, target: str, severity: str | None = None, limit: int = 25
+) -> dict:
+    """Сравнить два engagement'а продукта в DefectDojo: что появилось, что
+    устранено, что осталось. Только при слове «dojo»/«defectdojo».
+    base — с чем сравниваем (прошлый релиз, основная ветка), target — что
+    проверяем (новый релиз, ветка). Названия можно коротко: «main», «release-1.2».
+    Сюда же «чем X отличается от Y», «что появилось в X», «что изменилось».
+    Пример: «dojo сравни main и feature-x в abinf» -> product="abinf",
+    base="main", target="feature-x".
+
+    Ответ — три группы, отвечай в этом порядке: new_in_target (появилось),
+    fixed_in_target (было в base, в target не открыто — устранено),
+    still_open (открыто в обоих). У каждой сводка по уровням и ссылки.
+
+    Args:
+        product: продукт, можно неполно
+        base: прошлый engagement
+        target: новый engagement
+        severity: ТОЛЬКО если уровни названы в вопросе, например
+            "критичные и высокие". Не названы — не заполняй
+        limit: сколько находок показать в каждой группе
+    """
+    if err := _live(product):
+        return err
+    severity = _clean(severity)
+    try:
+        levels = release_notes.parse_levels(severity)
+        result = compare_mod.compare(product, base, target, "open", None, limit=100000)
+    except dojo.DojoError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Запрос к DefectDojo не удался: {e}"}
+
+    groups = {
+        "new_in_target": result["only_in_second"],
+        "fixed_in_target": result["only_in_first"],
+        "still_open": result["in_both"],
+    }
+    out = {"product": result["product"], "base": result["first"], "target": result["second"]}
+    for key, group in groups.items():
+        group = release_notes.only(group, levels)
+        out[key] = {**group, "findings": group["findings"][:limit]}
+    if levels:
+        out["severity"] = levels
+    out["citation_instruction"] = (
+        "Ответь по трём группам в этом порядке: new_in_target — что появилось, "
+        "fixed_in_target — что устранено, still_open — что осталось. Для каждой "
+        "сводка по уровням и находки со ссылками. Данные живые, из DefectDojo."
+    )
+    return out
+
+
+@mcp.tool(annotations=RO)
+def dojo_release_notes(
+    product: str, base: str, target: str, severity: str | None = None
+) -> dict:
+    """Release notes по устранённым уязвимостям между двумя engagement'ами
+    (релизами) в DefectDojo — готовый markdown-документ. Только при слове
+    «dojo»/«defectdojo». base — прошлый релиз, target — новый.
+    ТОЛЬКО когда просят именно release notes или документ для релиза. На
+    «сравни», «чем отличается», «что появилось» — dojo_compare, даже если
+    engagement'ы называются release-*.
+    Пример: «dojo release notes между release-1.1 и release-1.2 в abinf»
+    -> product="abinf", base="release-1.1", target="release-1.2".
+    Выведи поле release_notes ДОСЛОВНО.
+
+    Args:
+        product: продукт, можно неполно
+        base: прошлый релиз
+        target: новый релиз
+        severity: ТОЛЬКО если уровни названы в вопросе, например
+            "критичные и высокие". Не названы — не заполняй: в release notes
+            должно попасть всё устранённое
+    """
+    if err := _live(product):
+        return err
+    severity = _clean(severity)
+    try:
+        text, _ = release_notes.build(
+            product, base, target, severity, max_items=CHAT_NOTES_ITEMS
+        )
+    except dojo.DojoError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Запрос к DefectDojo не удался: {e}"}
+    return {
+        "release_notes": text,
+        "citation_instruction": (
+            "Выведи поле release_notes ДОСЛОВНО, markdown как есть: это документ "
+            "для релиза, собранный из данных DefectDojo. Ничего не пересказывай, "
+            "не добавляй и не убирай."
+        ),
+    }
 
 
 # Сколько находок показывать в release notes в чате: длинный список съел бы

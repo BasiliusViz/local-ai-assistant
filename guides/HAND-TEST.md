@@ -44,7 +44,7 @@ for p in 8010 8011 8012; do echo "== $p"; curl -s -X POST "http://localhost:$p/m
 Должно быть:
 - `8010`: `kb_search, code_search, jira_search`
 - `8011`: `query_graph, get_node, get_neighbors, ...`
-- `8012`: `dojo_findings`
+- `8012`: `dojo_findings, dojo_engagements, dojo_compare, dojo_release_notes`
 
 ### 4. У dojo_findings продукт необязателен
 
@@ -101,6 +101,17 @@ docker compose exec kb python confluence/test_sync.py
 
 В конце каждого `OK`. Тесты с Qdrant заводят временные коллекции и сами их
 удаляют — рабочую базу не трогают.
+
+### 7а. Модель правильно выбирает инструменты DefectDojo
+
+```bash
+docker compose exec kb python -m kb.dojo_tool_eval --model qwen3.6:35b
+```
+
+17 формулировок («сравни…», «release notes…», «какие engagement…»): модель
+видит те же инструменты и правила, что в Continue, проверяется, какой
+инструмент она выбрала и что положила в поля. DefectDojo не трогается.
+Должно быть `Итог: 17 из 17` или близко; `МИМО` — прислать вывод.
 
 ### 8. Самопроверка всего стека
 

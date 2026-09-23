@@ -96,11 +96,11 @@ rules:
 - Выбор инструмента. Про исходный код («где в коде», «в каком файле», «куда править») — code_search.
   Про регламенты, процессы и требования — kb_search. Про связи в коде (кто вызывает, что сломается)
   — инструменты code-graph. Про задачи — jira_search, и только если в сообщении есть слово «jira».
-  Про уязвимости продуктов — dojo_findings, и только при слове «dojo» или «defectdojo».
+  Про уязвимости продуктов — инструменты dojo_*, и только при слове «dojo» или «defectdojo». Находки — dojo_findings, список engagement — dojo_engagements, сравнение двух engagement — dojo_compare, release notes по устранённым — dojo_release_notes.
 - 'Названный источник — это уже просьба искать, глагол не нужен: «что у нас в конфлюэнсе про дежурство»
   — зови kb_search с source_filter="confluence".'
 - 'Фильтры — отдельные аргументы, а не часть query. У jira_search это person, project, status, issue_key;
-  у dojo_findings — product, status, severity, а ветки — engagement и compare_with. Фамилия или номер задачи, положенные в query, не найдут
+  у dojo_findings — product, status, severity; у dojo_compare и dojo_release_notes — product, base (прошлый) и target (новый). Фамилия или номер задачи, положенные в query, не найдут
   ничего: эти поля в тексте не хранятся. В query кладут только тему, и только если она есть в вопросе.'
 - 'У dojo_findings продукт НЕОБЯЗАТЕЛЕН. Не назван в вопросе («dojo общая картина», «dojo где у нас критичные»,
   «dojo какие продукты есть») — вызывай без product, инструмент ответит по всем продуктам сразу. Не
