@@ -404,6 +404,31 @@ def list_spaces(client: Client, personal: bool, count: bool) -> int:
     return 0
 
 
+# Версия формата .md. 2 — шапка с адресом страницы. При смене формата все
+# файлы переписываются следующим прогоном, даже неизменившиеся страницы
+MD_FORMAT = 2
+
+
+def page_url(base: str, page_id: str) -> str:
+    """Постоянная ссылка на страницу.
+
+    Не _links.webui: в нём заголовок, и после переименования страницы старая
+    ссылка из индекса вела бы в никуда. pageId переживает и переименование, и
+    перенос в другое пространство.
+    """
+    return f"{base.rstrip('/')}/pages/viewpage.action?pageId={page_id}"
+
+
+def front_matter(url: str, title: str) -> str:
+    """Шапка файла: откуда страница. Индексатор кладёт url в ссылку поиска,
+    а title — в имя документа, и в текст для эмбеддингов шапка не попадает.
+
+    Значения — в одну строку: переводы строк в заголовке сломали бы разбор.
+    """
+    clean = " ".join(title.split())
+    return f"---\nurl: {url}\ntitle: {clean}\n---\n"
+
+
 def safe_name(title: str) -> str:
     """Заголовок страницы -> имя файла."""
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", title).strip(". ")
@@ -609,6 +634,9 @@ def main() -> int:
             and previous.get("updated") == updated
             and previous.get("file") == str(target)
             and target.is_file()
+            # Формат файла поменялся (например, добавилась шапка с адресом) —
+            # переписать все, иначе старые файлы останутся без неё навсегда
+            and state.get("_format") == MD_FORMAT
         ):
             stats["без изменений"] += 1
             continue
@@ -630,7 +658,9 @@ def main() -> int:
                   f"({len(md)} символов)")
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(md, encoding="utf-8")
+            target.write_text(
+                front_matter(page_url(url, page_id), title) + md, encoding="utf-8"
+            )
             # Переименовали или перенесли: старый файл убираем, иначе в поиске
             # висели бы обе версии, и старая — навсегда
             if old_file and old_file != target and old_file.is_file():
@@ -687,7 +717,11 @@ def main() -> int:
     if not args.dry_run:
         state_path.write_text(
             json.dumps(
-                {**new_state, "_synced_at": datetime.now().isoformat()},
+                {
+                    **new_state,
+                    "_synced_at": datetime.now().isoformat(),
+                    "_format": MD_FORMAT,
+                },
                 ensure_ascii=False,
                 indent=2,
             ),

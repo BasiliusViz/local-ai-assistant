@@ -259,6 +259,67 @@ def delete_file_points(client: QdrantClient, collection: str, source: str, rel: 
     )
 
 
+def read_front_matter(raw: bytes) -> tuple[dict[str, str], bytes]:
+    """Шапка «---\\nключ: значение\\n---\\n» в начале файла -> (поля, текст).
+
+    Её пишет выгрузка Confluence: адрес страницы и заголовок. Текст
+    возвращается байтами ровно как лежит после шапки — хеш по нему совпадает
+    с хешем файла, выгруженного до появления шапки, и такой файл не
+    пересчитывается. Нет шапки — пустые поля и файл целиком.
+    """
+    # \r?\n: файл мог пройти через Windows
+    header = re.match(rb"---\r?\n(.*?)\r?\n---\r?\n", raw, re.DOTALL)
+    if not header:
+        return {}, raw
+    meta = {}
+    for line in header.group(1).decode("utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        field = re.fullmatch(r"\s*([A-Za-z_][\w-]*)\s*:\s?(.*)", line)
+        # Документ, который просто начинается с горизонтальной черты «---»:
+        # между чертами обычный текст. Это не шапка — иначе он выпал бы из
+        # поиска
+        if not field:
+            return {}, raw
+        meta[field.group(1)] = field.group(2).strip()
+    # «Note: ...» между двумя чертами тоже похоже на поле. Шапкой считаем,
+    # только если в ней есть то, ради чего она пишется
+    if not ({"url", "title"} & meta.keys()):
+        return {}, raw
+    return meta, raw[header.end() :]
+
+
+def load_links(path: Path) -> dict[str, tuple[str, str]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {rel: (v[0], v[1]) for rel, v in data.items()}
+    except (OSError, ValueError, TypeError, IndexError):
+        return {}
+
+
+def save_links(path: Path, links: dict[str, tuple[str, str]]) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(links, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def set_link(
+    client: QdrantClient, collection: str, source: str, rel: str, url: str, title: str
+) -> None:
+    """Поменять ссылку и заголовок у всех чанков файла, не трогая векторы."""
+    client.set_payload(
+        collection_name=collection,
+        payload={"url": url, "title": title},
+        points=models.Filter(
+            must=[
+                models.FieldCondition(key="source", match=models.MatchValue(value=source)),
+                models.FieldCondition(key="source_id", match=models.MatchValue(value=rel)),
+            ]
+        ),
+        wait=True,
+    )
+
+
 def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
     # httpx рапортует о каждом запросе; при индексации это сотни строк,
@@ -297,6 +358,12 @@ def main() -> int:
     previous = {} if args.full else load_state(state_path)
     current: dict[str, str] = {}
 
+    # Какие ссылка и заголовок сейчас записаны у точек каждого файла. Отдельный
+    # файл, а не общее состояние: его формат читают и jira_index, и dojo_index
+    links_path = root / f".index_links.{args.source}.json"
+    links = {} if args.full else load_links(links_path)
+    relinked = 0
+
     print(f"Файлов: {len(files)}" + ("" if args.full else f", уже посчитано: {len(previous)}"))
     total = 0
     skipped = 0
@@ -312,6 +379,7 @@ def main() -> int:
         # пропавшие с диска тоже остаются — их вычистит конец прогона
         if number > 1 and (number - 1) % CHECKPOINT_EVERY == 0:
             save_state(state_path, {**previous, **current})
+            save_links(links_path, links)
 
         rel = str(path.relative_to(root)).replace("\\", "/")
         try:
@@ -324,7 +392,13 @@ def main() -> int:
                 current[rel] = previous[rel]
             continue
 
-        digest = hashlib.sha256(raw).hexdigest()
+        # Шапка (адрес и заголовок страницы) — отдельно от текста. Хеш и
+        # эмбеддинги только по тексту: добавление шапки к уже посчитанному
+        # файлу не должно заставлять пересчитывать его векторы
+        meta, body = read_front_matter(raw)
+        url = meta.get("url") or str(path)
+        title = meta.get("title") or path.stem
+        digest = hashlib.sha256(body).hexdigest()
         current[rel] = digest
 
         # Файл не менялся с прошлого прогона — векторы в базе актуальны.
@@ -333,9 +407,15 @@ def main() -> int:
         # каждый час гонять эмбеддер вхолостую и отбирать видеокарту у чата
         if previous.get(rel) == digest:
             skipped += 1
+            # Текст тот же, а ссылка новая (например, выгрузка стала писать
+            # адрес страницы) — меняем только поля, без эмбеддингов
+            if links.get(rel, (str(path), path.stem)) != (url, title):
+                set_link(client, args.collection, args.source, rel, url, title)
+                relinked += 1
+            links[rel] = (url, title)
             continue
 
-        text = raw.decode("utf-8", errors="replace")
+        text = body.decode("utf-8", errors="replace")
         chunks = split_text(text) if text.strip() else []
 
         if chunks:
@@ -366,6 +446,7 @@ def main() -> int:
                 current.pop(rel, None)
             if fails_in_row >= MAX_FAILS_IN_ROW:
                 save_state(state_path, {**previous, **current})
+                save_links(links_path, links)
                 print(
                     f"\n{fails_in_row} файлов подряд без эмбеддингов — похоже, "
                     "эмбеддер недоступен, а не плохие страницы. Останавливаюсь; "
@@ -379,6 +460,7 @@ def main() -> int:
         # пустого — если страницу очистили, её старый текст не должен остаться
         # в поиске
         delete_file_points(client, args.collection, args.source, rel)
+        links[rel] = (url, title)
         if not chunks:
             continue
 
@@ -398,8 +480,8 @@ def main() -> int:
                             "source": args.source,
                             "source_id": rel,
                             "space": path.parent.name,
-                            "title": path.stem,
-                            "url": str(path),
+                            "title": title,
+                            "url": url,
                             "acl_groups": ["all"],
                             "updated_at": updated,
                             "chunk_idx": start + i,
@@ -420,12 +502,16 @@ def main() -> int:
     for rel in gone:
         delete_file_points(client, args.collection, args.source, rel)
         print(f"  удалён из индекса: {rel}")
+        links.pop(rel, None)
 
     save_state(state_path, current)
+    save_links(links_path, {rel: v for rel, v in links.items() if rel in current})
 
     info = client.get_collection(args.collection)
     print(f"\nЗаписано чанков: {total}")
     print(f"Без изменений, пропущено файлов: {skipped}")
+    if relinked:
+        print(f"Из них обновлена только ссылка (без эмбеддингов): {relinked}")
     if gone:
         print(f"Пропало с диска и убрано из индекса: {len(gone)}")
     print(f"Всего в коллекции {args.collection}: {info.points_count}")

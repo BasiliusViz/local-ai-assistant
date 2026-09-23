@@ -61,6 +61,24 @@ class SplitTest(unittest.TestCase):
         self.assertTrue(all(len(c["text"]) <= LIMIT for c in chunks))
 
 
+class FrontMatterTest(unittest.TestCase):
+    def test_header_parsed_and_stripped(self):
+        raw = "---\nurl: https://wiki/pages/viewpage.action?pageId=7\ntitle: Регламент\n---\n# Текст\n".encode()
+        meta, body = doc_index.read_front_matter(raw)
+        self.assertEqual(meta["url"], "https://wiki/pages/viewpage.action?pageId=7")
+        self.assertEqual(meta["title"], "Регламент")
+        self.assertEqual(body, "# Текст\n".encode())
+
+    def test_no_header(self):
+        raw = "# Текст\n".encode()
+        self.assertEqual(doc_index.read_front_matter(raw), ({}, raw))
+
+    def test_horizontal_rule_is_not_header(self):
+        # документ, который начинается с черты, — не шапка: текст не теряется
+        raw = "---\nВажно: читать до конца\n\nобычный текст\n---\nдальше\n".encode()
+        self.assertEqual(doc_index.read_front_matter(raw), ({}, raw))
+
+
 def ok_embed(texts):
     return [[1.0] + [0.0] * (config.EMBED_DIM - 1) for _ in texts]
 
@@ -169,6 +187,59 @@ class RunTest(unittest.TestCase):
         self.assertEqual(len(fails), doc_index.MAX_FAILS_IN_ROW)
         # и сохранил сделанное, хотя до контрольной точки не дошёл
         self.assertIn("doc1.md", self.state())
+
+    def payloads(self, rel):
+        got, _ = client().scroll(
+            self.coll,
+            scroll_filter=models.Filter(
+                must=[models.FieldCondition(key="source_id", match=models.MatchValue(value=rel))]
+            ),
+            with_payload=True,
+        )
+        return [p.payload for p in got]
+
+    def test_header_gives_link_and_stays_out_of_text(self):
+        (self.root / "doc1.md").write_text(
+            "---\nurl: https://wiki/pages/viewpage.action?pageId=1\ntitle: Док первый\n---\n"
+            "# Док 1\n\nтекст номер 1\n",
+            encoding="utf-8",
+        )
+        _, calls = self.run_index()
+        self.assertFalse(any("pageId" in t for batch in calls for t in batch))
+        [p] = self.payloads("doc1.md")
+        self.assertEqual(p["url"], "https://wiki/pages/viewpage.action?pageId=1")
+        self.assertEqual(p["title"], "Док первый")
+        self.assertNotIn("url:", p["text"])
+
+    def test_header_added_later_relinks_without_embedding(self):
+        # так выглядит обновление выгрузки: 120 тысяч кусков уже посчитаны,
+        # а в файлах появилась шапка с адресом. Пересчитывать их нельзя
+        self.run_index()
+        for i in range(1, 6):
+            path = self.root / f"doc{i}.md"
+            body = path.read_text(encoding="utf-8")
+            path.write_text(
+                f"---\nurl: https://wiki/pages/viewpage.action?pageId={i}\ntitle: Страница {i}\n---\n{body}",
+                encoding="utf-8",
+            )
+        _, calls = self.run_index()
+        self.assertEqual(calls, [])
+        [p] = self.payloads("doc3.md")
+        self.assertEqual(p["url"], "https://wiki/pages/viewpage.action?pageId=3")
+        self.assertEqual(p["title"], "Страница 3")
+        # третий прогон ничего не трогает
+        with mock.patch.object(doc_index, "set_link") as relink:
+            _, calls = self.run_index()
+        self.assertEqual(calls, [])
+        relink.assert_not_called()
+
+    def test_plain_files_keep_path_link(self):
+        self.run_index()
+        [p] = self.payloads("doc2.md")
+        self.assertTrue(p["url"].endswith("doc2.md"))
+        with mock.patch.object(doc_index, "set_link") as relink:
+            self.run_index()
+        relink.assert_not_called()
 
     def test_emptied_file_removed_from_search(self):
         self.run_index()

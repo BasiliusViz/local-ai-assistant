@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import io
+import json
 import os
 import shutil
 import sys
@@ -259,6 +260,35 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("DEV/Эскалация инцидентов.md", self.files())
         self.assertNotIn("OPS/Эскалация инцидентов.md", self.files())
+
+    # --- ссылка на страницу в шапке файла
+
+    def test_file_has_page_link(self):
+        self.run_sync(spaces="OPS")
+        text = (self.out / "OPS" / "Дежурство.md").read_text(encoding="utf-8")
+        self.assertTrue(
+            text.startswith(
+                f"---\nurl: {self.url}/pages/viewpage.action?pageId=1003\n"
+                "title: Дежурство\n---\n"
+            ),
+            text[:200],
+        )
+
+    def test_old_format_files_rewritten_once(self):
+        # выгрузка до появления шапки: файлы без неё, в состоянии нет _format
+        self.run_sync(spaces="DEV")
+        state_path = self.out / ".sync_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.pop("_format")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        page = self.out / "DEV" / "Регламент код-ревью.md"
+        page.write_text(page.read_text(encoding="utf-8").split("---\n", 2)[2], encoding="utf-8")
+
+        code, out = self.run_sync(spaces="DEV")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(page.read_text(encoding="utf-8").startswith("---\nurl: "))
+        code, out = self.run_sync(spaces="DEV")
+        self.assertRegex(out, r"без изменений\s+1\n")
 
     def test_file_deleted_by_hand_comes_back(self):
         self.run_sync(spaces="DEV")
