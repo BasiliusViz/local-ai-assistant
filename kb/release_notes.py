@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -62,15 +63,29 @@ def line(f: dict) -> str:
     return f"- **{f['title']}**{tail} ([#{f['id']}]({f['url']}))"
 
 
-def section(title: str, group: dict) -> list[str]:
+def section(title: str, group: dict, max_items: int | None = None) -> list[str]:
+    """Раздел по уровням. max_items — потолок строк: в чате длинный список
+    съел бы контекст модели, поэтому там показываем начало и пишем, сколько
+    всего. Сортировка — худшие первыми, так что обрезается хвост из низких."""
     out = [f"## {title}", ""]
     if not group["total"]:
         return out + ["Нет.", ""]
+    shown = 0
     for level in dojo.SEVERITIES:
         items = [f for f in group["findings"] if f["severity"] == level]
-        if items:
-            out += [f"### {LEVEL_RU[level]} ({len(items)})", ""]
-            out += [line(f) for f in items] + [""]
+        if not items:
+            continue
+        out += [f"### {LEVEL_RU[level]} ({len(items)})", ""]
+        if max_items is not None:
+            items = items[: max(max_items - shown, 0)]
+        out += [line(f) for f in items] + [""]
+        shown += len(items)
+    if max_items is not None and shown < group["total"]:
+        out += [
+            f"_Показано {shown} из {group['total']}. Полный список — командой "
+            "`python -m kb.release_notes` на сервере._",
+            "",
+        ]
     return out
 
 
@@ -79,7 +94,9 @@ def summary_line(group: dict) -> str:
     return ", ".join(parts) if parts else "нет"
 
 
-def render(result: dict, levels: list[str], with_new: bool) -> str:
+def render(
+    result: dict, levels: list[str], with_new: bool, max_items: int | None = None
+) -> str:
     fixed = only(result["only_in_first"], levels)
     new = only(result["only_in_second"], levels)
     remain = only(result["in_both"], levels)
@@ -103,9 +120,9 @@ def render(result: dict, levels: list[str], with_new: bool) -> str:
         "найденная открытой в новой.",
         "",
     ]
-    out += section("Устранено", fixed)
+    out += section("Устранено", fixed, max_items)
     if with_new:
-        out += section(f"Новые в {result['second']}", new)
+        out += section(f"Новые в {result['second']}", new, max_items)
     out += [
         "## Остаются открытыми",
         "",
@@ -114,6 +131,28 @@ def render(result: dict, levels: list[str], with_new: bool) -> str:
         "",
     ]
     return "\n".join(out)
+
+
+def parse_levels(value: str | None) -> list[str]:
+    """«critical,high», «критичные и высокие» -> ["Critical", "High"]."""
+    parts = re.split(r"[,;/]|\s+и\s+", value or "")
+    return [dojo.normalize_severity(p) for p in parts if p.strip()]
+
+
+def build(
+    product: str,
+    first: str,
+    second: str,
+    severity: str | None = None,
+    with_new: bool = False,
+    max_items: int | None = None,
+) -> tuple[str, dict]:
+    """Документ целиком: одинаковый для команды и для чата."""
+    levels = parse_levels(severity)
+    # Сравниваем всё открытое, уровни отбираем уже в документе: сводка
+    # «остаются открытыми» иначе считалась бы не по тем же правилам
+    result = dojo_compare.compare(product, first, second, "open", None, limit=100000)
+    return render(result, levels, with_new, max_items), result
 
 
 def main() -> int:
@@ -130,17 +169,13 @@ def main() -> int:
         print("Не заданы DOJO_URL и DOJO_TOKEN.")
         return 2
     try:
-        levels = [dojo.normalize_severity(s) for s in args.severity.split(",") if s.strip()]
-        # Сравниваем всё открытое, уровни отбираем уже в документе: сводка
-        # «остаются открытыми» иначе считалась бы не по тем же правилам
-        result = dojo_compare.compare(
-            args.product, args.first, args.second, "open", None, limit=100000
+        text, result = build(
+            args.product, args.first, args.second, args.severity, args.with_new
         )
     except dojo.DojoError as e:
         print(e)
         return 1
 
-    text = render(result, levels, args.with_new)
     if args.out:
         path = Path(args.out)
     else:

@@ -257,6 +257,7 @@ bash setup-continue.sh --ollama http://АДРЕС-OLLAMA:11434 --server http://�
 | Отчёт по продукту | «**dojo** подготовь документ по критичным в abinf» |
 | Ветки продукта | «**dojo** какие ветки есть в abinf» |
 | Сравнить две ветки | «**dojo** сравни ветки main и feature-x в abinf» |
+| Release notes по устранённым | «**dojo** сделай release notes по устранённым между release-1.1 и release-1.2 в abinf» |
 
 - Задачи ищутся **только со словом «jira»**, уязвимости — **только со
   словом «dojo»**.

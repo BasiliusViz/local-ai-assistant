@@ -31,7 +31,7 @@ import sys
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
-from kb import dojo, dojo_compare, dojo_retriever
+from kb import dojo, dojo_compare, dojo_retriever, release_notes
 from kb.embedder import EmbedError
 
 logging.basicConfig(
@@ -103,6 +103,12 @@ def dojo_findings(
       «dojo какие ветки есть в abinf»           -> product="abinf", engagement="*"
       «dojo что в ветке feature-x в abinf»      -> product="abinf",
                                                    engagement="feature-x"
+      «dojo сделай release notes по устранённым между release-1.1 и release-1.2 в abinf»
+                                                -> product="abinf", engagement="release-1.1",
+                                                   compare_with="release-1.2",
+                                                   response_format="release_notes"
+                                                   (severity — если просят только часть
+                                                   уровней: "критичные и высокие")
       «dojo сравни ветки main и feature-x в abinf»
                                                 -> product="abinf", engagement="main",
                                                    compare_with="feature-x"
@@ -140,7 +146,9 @@ def dojo_findings(
         response_format: "concise" (по умолчанию) — номер, заголовок, уровень,
             статус, ссылка. "detailed" — плюс сканер, CWE, дата и найденный
             фрагмент. "report" — всё для документа: описание проблемы, чем
-            грозит и что предлагает сканер для исправления
+            грозит и что предлагает сканер для исправления. "release_notes" —
+            только с engagement и compare_with: готовый документ по
+            устранённым уязвимостям, выводить дословно
 
     Returns:
         product, summary (счётчики по уровням), applied_filters и findings —
@@ -149,7 +157,9 @@ def dojo_findings(
         них человеку некуда идти разбираться.
     """
     if engagement.strip() or compare_with.strip():
-        return engagement_mode(product, engagement, compare_with, status, severity, limit)
+        return engagement_mode(
+            product, engagement, compare_with, status, severity, limit, response_format
+        )
 
     try:
         result = dojo_retriever.search(
@@ -213,6 +223,7 @@ def engagement_mode(
     status: str | None,
     severity: str | None,
     limit: int,
+    response_format: str = "concise",
 ) -> dict:
     """Ветки продукта: список, одна ветка или сравнение двух — живым запросом."""
     if not dojo.configured():
@@ -228,6 +239,28 @@ def engagement_mode(
     first, second = engagement.strip(), compare_with.strip()
     if not first:
         first, second = second, ""
+    if response_format == "release_notes":
+        if not second:
+            return {
+                "error": "Для release notes нужны два engagement'а: прошлый "
+                "релиз (engagement) и новый (compare_with)."
+            }
+        try:
+            text, _ = release_notes.build(
+                product, first, second, severity, max_items=CHAT_NOTES_ITEMS
+            )
+        except dojo.DojoError as e:
+            return {"error": str(e)}
+        except Exception as e:
+            return {"error": f"Запрос к DefectDojo не удался: {e}"}
+        return {
+            "release_notes": text,
+            "citation_instruction": (
+                "Выведи поле release_notes ДОСЛОВНО, markdown как есть: это "
+                "документ для релиза, собранный из данных DefectDojo. Ничего не "
+                "пересказывай, не добавляй и не убирай."
+            ),
+        }
     try:
         state = (
             dojo_retriever.normalize_status(status)
@@ -255,6 +288,11 @@ def engagement_mode(
 
 def _norm(text: str) -> str:
     return text.strip().casefold()
+
+
+# Сколько находок показывать в release notes в чате: длинный список съел бы
+# контекст модели. Полный документ — командой python -m kb.release_notes
+CHAT_NOTES_ITEMS = 100
 
 
 def main() -> None:

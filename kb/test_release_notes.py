@@ -75,6 +75,43 @@ class ReleaseNotesTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Есть: main_abinf", buf.getvalue())
 
+    # --- в чате, через инструмент
+
+    def test_tool_release_notes(self):
+        from kb import dojo_server
+
+        out = dojo_server.dojo_findings(
+            product="abinf", engagement="main", compare_with="feature-x",
+            response_format="release_notes",
+        )
+        self.assertNotIn("error", out)
+        self.assertIn("**Устранено: 1 уязвимость**", out["release_notes"])
+        self.assertIn("ДОСЛОВНО", out["citation_instruction"])
+
+    def test_tool_release_notes_levels_in_words(self):
+        from kb import dojo_server
+
+        out = dojo_server.dojo_findings(
+            product="abinf", engagement="main", compare_with="feature-x",
+            response_format="release_notes", severity="критичные и высокие",
+        )
+        self.assertIn("Учтены уровни: критичные, высокие.", out["release_notes"])
+
+    def test_tool_release_notes_needs_two(self):
+        from kb import dojo_server
+
+        out = dojo_server.dojo_findings(
+            product="abinf", engagement="main", response_format="release_notes"
+        )
+        self.assertIn("два engagement", out["error"])
+
+    def test_chat_list_capped(self):
+        from kb import dojo_compare
+
+        result = dojo_compare.compare("abinf", "main", "feature-x", "open", None, 1000)
+        text = release_notes.render(result, [], True, max_items=0)
+        self.assertIn("_Показано 0 из 1.", text)
+
     def test_plural(self):
         words = ("уязвимость", "уязвимости", "уязвимостей")
         got = [release_notes.plural(n, *words) for n in (1, 2, 5, 11, 21, 22, 25, 112)]
