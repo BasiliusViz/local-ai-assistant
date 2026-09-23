@@ -283,6 +283,9 @@ class Exclusions:
         return "; ".join(parts)
 
 
+# Как часто печатать ход выгрузки
+PROGRESS_EVERY = 50
+
 # Сколько страниц просматривать в последнем, самом медленном способе поиска
 # пространств. Хватает, чтобы увидеть все живые пространства, и не
 # превращает проверку в полную выгрузку
@@ -518,8 +521,10 @@ def main() -> int:
     def source_pages():
         """Пространства целиком, потом корневые страницы и всё под ними."""
         for key in space_keys:
+            print(f"\n== пространство {key}", flush=True)
             yield from client.space_pages(key, with_body=True)
         for root_id in roots:
+            print(f"\n== страница {root_id} и всё под ней", flush=True)
             # Корневая страница тоже нужна: в выдаче CQL ancestor её нет
             yield client.page(root_id, with_body=True)
             yield from client.descendants(root_id, with_body=True)
@@ -540,6 +545,16 @@ def main() -> int:
         if page_id in seen_ids:
             continue
         seen_ids.add(page_id)
+        # Ход выполнения: без него тысяча страниц — это минуты тишины, и
+        # прогон выглядит зависшим. Печатаем ДО учёта текущей страницы — тогда
+        # числа в строке относятся ровно к уже обработанным
+        if processed and processed % PROGRESS_EVERY == 0:
+            print(
+                f"  обработано {processed}: новых {stats['новых']}, "
+                f"обновлено {stats['обновлено']}, "
+                f"без изменений {stats['без изменений']}",
+                flush=True,
+            )
         processed += 1
 
         space = page.get("space", {}).get("key", "unknown")
