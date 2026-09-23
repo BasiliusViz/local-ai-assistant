@@ -84,12 +84,28 @@ def configured() -> bool:
     return bool(URL and TOKEN)
 
 
+def _read_only(request: httpx.Request) -> None:
+    """Всё, кроме чтения, отклоняется ДО отправки.
+
+    Сейчас весь код только читает, но держится это на том, как он написан.
+    Галлюцинация модели или ошибка в будущей правке, закрывшая или удалившая
+    находку, — инцидент безопасности, поэтому запрет стоит в самом клиенте:
+    через него запрос на изменение уйти не может в принципе.
+    """
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        raise DojoError(
+            f"Запрос {request.method} {request.url.path} заблокирован: доступ "
+            "к DefectDojo только на чтение."
+        )
+
+
 def _client() -> httpx.Client:
     return httpx.Client(
         base_url=f"{URL}/api/v2",
         headers={"Authorization": f"Token {TOKEN}", "Accept": "application/json"},
         timeout=TIMEOUT,
         verify=VERIFY_TLS,
+        event_hooks={"request": [_read_only]},
     )
 
 

@@ -92,6 +92,10 @@ docker compose exec kb python -m kb.test_doc_index
 ```
 
 ```bash
+docker compose exec kb python -m kb.test_dojo_readonly
+```
+
+```bash
 docker compose exec kb python confluence/test_sync.py
 ```
 
