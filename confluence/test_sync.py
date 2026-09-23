@@ -47,6 +47,7 @@ class SyncTest(unittest.TestCase):
     def setUp(self):
         mock_server.PAGES[:] = copy.deepcopy(ORIGINAL_PAGES)
         mock_server.SPACES_FORBIDDEN = False
+        mock_server.SEARCH_FORBIDDEN = False
         self.out = Path(tempfile.mkdtemp(prefix="confluence-test-"))
 
     def tearDown(self):
@@ -176,6 +177,46 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertRegex(out, r"OPS\s+3")
         self.assertEqual(self.files(), set())
+
+    # --- какие пространства есть (--list-spaces)
+
+    def test_list_spaces(self):
+        code, out = self.run_sync("--list-spaces")
+        self.assertEqual(code, 0, out)
+        self.assertIn("способ: список пространств", out)
+        self.assertIn("CONFLUENCE_SPACES=DEV,OPS\n", out)
+        self.assertIn("Эксплуатация", out)
+        self.assertEqual(self.files(), set())
+
+    def test_list_spaces_personal(self):
+        code, out = self.run_sync("--list-spaces", "--personal")
+        self.assertEqual(code, 0, out)
+        self.assertIn("CONFLUENCE_SPACES=DEV,OPS,~ivanov", out)
+
+    def test_list_spaces_count(self):
+        code, out = self.run_sync("--list-spaces", "--count")
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"OPS\s+5\s+Эксплуатация")
+
+    def test_list_spaces_when_listing_forbidden_uses_search(self):
+        mock_server.SPACES_FORBIDDEN = True
+        code, out = self.run_sync("--list-spaces")
+        self.assertEqual(code, 0, out)
+        self.assertIn("способ: поиск CQL", out)
+        self.assertIn("CONFLUENCE_SPACES=DEV,OPS\n", out)
+
+    def test_list_spaces_when_all_forbidden_scans_pages(self):
+        mock_server.SPACES_FORBIDDEN = True
+        mock_server.SEARCH_FORBIDDEN = True
+        code, out = self.run_sync("--list-spaces")
+        self.assertEqual(code, 0, out)
+        self.assertIn("способ: обход страниц", out)
+        self.assertIn("CONFLUENCE_SPACES=DEV,OPS\n", out)
+
+    def test_list_spaces_needs_no_spaces_setting(self):
+        # смотрят как раз затем, чтобы узнать, что вписать
+        code, out = self.run_sync("--list-spaces", spaces="", pages="")
+        self.assertEqual(code, 0, out)
 
     # --- инкрементальность
 

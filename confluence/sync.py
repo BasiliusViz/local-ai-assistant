@@ -283,6 +283,91 @@ class Exclusions:
         return "; ".join(parts)
 
 
+# Сколько страниц просматривать в последнем, самом медленном способе поиска
+# пространств. Хватает, чтобы увидеть все живые пространства, и не
+# превращает проверку в полную выгрузку
+SCAN_PAGES_LIMIT = 5000
+
+
+def discover_spaces(client: Client, personal: bool) -> tuple[list[dict], str]:
+    """Какие пространства видит токен. Три способа, от быстрого к медленному.
+
+    Список пространств (/rest/api/space) часто закрыт администратором, а
+    посмотреть, что можно вписать в CONFLUENCE_SPACES, нужно всё равно.
+    Поэтому при 403 пробуем поиск по CQL, а если закрыт и он — обходим
+    страницы и собираем пространства, в которых они лежат.
+    """
+    def keep(key: str) -> bool:
+        return personal or not key.startswith("~")
+
+    try:
+        params = {} if personal else {"type": "global"}
+        listed = list(client._paged("/rest/api/space", status="current", **params))
+        return [s for s in listed if keep(s.get("key", ""))], "список пространств"
+    except ConfluenceError as e:
+        print(f"Список пространств закрыт ({str(e).splitlines()[0]}), пробую поиск...")
+
+    try:
+        found: dict[str, dict] = {}
+        for item in client._paged("/rest/api/search", cql="type=space"):
+            space = item.get("space") or {}
+            key = space.get("key", "")
+            if key and keep(key):
+                found[key] = {"key": key, "name": space.get("name") or item.get("title", "")}
+        return list(found.values()), "поиск CQL"
+    except ConfluenceError as e:
+        print(f"Поиск закрыт ({str(e).splitlines()[0]}), обхожу страницы...")
+
+    found = {}
+    pages = client._paged("/rest/api/content/search", cql="type=page", expand="space")
+    for number, page in enumerate(pages, 1):
+        space = page.get("space") or {}
+        key = space.get("key", "")
+        if key and keep(key):
+            found.setdefault(key, {"key": key, "name": space.get("name", "")})
+        if number >= SCAN_PAGES_LIMIT:
+            return list(found.values()), (
+                f"обход страниц — просмотрены первые {SCAN_PAGES_LIMIT}, "
+                "список может быть неполным"
+            )
+    return list(found.values()), "обход страниц"
+
+
+def list_spaces(client: Client, personal: bool, count: bool) -> int:
+    """--list-spaces: что можно вписать в CONFLUENCE_SPACES."""
+    try:
+        spaces, how = discover_spaces(client, personal)
+    except ConfluenceError as e:
+        print(f"Не удалось узнать пространства ни одним способом.\n{e}")
+        return 1
+
+    spaces.sort(key=lambda s: s.get("key", "").casefold())
+    print(f"\nДоступно пространств: {len(spaces)} (способ: {how})\n")
+    if not spaces:
+        print("Токен не видит ни одного пространства — проверьте его права.")
+        return 1
+
+    width = max(len("КЛЮЧ"), *(len(s.get("key", "")) for s in spaces))
+    print(f"  {'КЛЮЧ':{width}}  {'СТРАНИЦ':>7}  НАЗВАНИЕ" if count else f"  {'КЛЮЧ':{width}}  НАЗВАНИЕ")
+    for s in spaces:
+        key = s.get("key", "")
+        if count:
+            try:
+                pages = sum(1 for _ in client.space_pages(key, with_body=False))
+                shown = str(pages)
+            except ConfluenceError:
+                shown = "нет доступа"
+            print(f"  {key:{width}}  {shown:>7}  {s.get('name', '')}")
+        else:
+            print(f"  {key:{width}}  {s.get('name', '')}")
+
+    print("\nСтрока для .env со всеми показанными — лишние удалить:")
+    print("  CONFLUENCE_SPACES=" + ",".join(s.get("key", "") for s in spaces))
+    if not count:
+        print("\nСколько страниц в каждом: добавьте --count (дольше).")
+    return 0
+
+
 def safe_name(title: str) -> str:
     """Заголовок страницы -> имя файла."""
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", title).strip(". ")
@@ -304,6 +389,19 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(description="Выгрузка Confluence в markdown")
     ap.add_argument("--check", action="store_true", help="проверить связь и выйти")
+    ap.add_argument(
+        "--list-spaces",
+        action="store_true",
+        help="показать, какие пространства видит токен, и выйти",
+    )
+    ap.add_argument(
+        "--count", action="store_true", help="с --list-spaces: посчитать страницы"
+    )
+    ap.add_argument(
+        "--personal",
+        action="store_true",
+        help="с --list-spaces: показать и личные пространства (~логин)",
+    )
     ap.add_argument("--dry-run", action="store_true", help="показать, ничего не писать")
     ap.add_argument("--full", action="store_true", help="выгрузить всё, игнорируя даты")
     ap.add_argument("--dump-raw", metavar="FILE", help="сохранить сырой ответ API")
@@ -328,8 +426,16 @@ def main() -> int:
         print("настройки стека. После правки: docker compose up -d kb")
         return 2
 
+    if args.list_spaces:
+        page_size = int(os.getenv("CONFLUENCE_PAGE_SIZE", "50"))
+        return list_spaces(
+            Client(url, token, page_size=page_size), args.personal, args.count
+        )
+
     if not roots and not spaces_env:
-        print("Не задано, что выгружать. В .env одно из двух (или оба):")
+        print("Не задано, что выгружать. Посмотреть доступные пространства:")
+        print("  python confluence/sync.py --list-spaces")
+        print("Потом в .env одно из двух (или оба):")
         print("  CONFLUENCE_SPACES=DEV,OPS  — пространства целиком, по ключу;")
         print("                               ключ виден в адресе: .../display/DEV/...")
         print("  CONFLUENCE_SPACES=*        — все общие пространства")

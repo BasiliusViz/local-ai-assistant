@@ -20,6 +20,8 @@ PORT = 8090
 TOKEN = "test-token"
 # Имитация закрытого администратором списка спейсов (частая настройка)
 SPACES_FORBIDDEN = False
+# Имитация закрытого поиска /rest/api/search (встречается реже)
+SEARCH_FORBIDDEN = False
 
 SPACES = [
     {"key": "DEV", "name": "Разработка", "type": "global"},
@@ -211,6 +213,32 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        # общий поиск: нас интересует только cql=type=space. Формат ответа —
+        # как у Confluence: у каждого результата объект space внутри
+        if url.path == "/rest/api/search":
+            if SEARCH_FORBIDDEN:
+                self._send(403, {"message": "Forbidden"})
+                return
+            cql = query.get("cql", [""])[0]
+            start = int(query.get("start", ["0"])[0])
+            limit = int(query.get("limit", ["25"])[0])
+            items = SPACES if re.fullmatch(r"\s*type\s*=\s*space\s*", cql) else []
+            window = items[start : start + limit]
+            self._send(200, {
+                "results": [
+                    {
+                        "entityType": "space",
+                        "title": s["name"],
+                        "space": {"key": s["key"], "name": s["name"], "type": s["type"]},
+                    }
+                    for s in window
+                ],
+                "start": start,
+                "limit": limit,
+                "size": len(window),
+            })
+            return
+
         # одно пространство по ключу. Настоящий Confluence отвечает 404 и на
         # несуществующее, и на закрытое для токена — различить их нельзя
         m = re.match(r"^/rest/api/space/([^/]+)$", url.path)
@@ -230,7 +258,12 @@ class Handler(BaseHTTPRequestHandler):
             expand = query.get("expand", [""])[0]
 
             m = re.search(r"ancestor\s*=\s*(\d+)", cql)
-            items = descendants_of(m.group(1)) if m else []
+            if m:
+                items = descendants_of(m.group(1))
+            elif re.fullmatch(r"\s*type\s*=\s*page\s*", cql):
+                items = list(PAGES)
+            else:
+                items = []
             window = items[start : start + limit]
             self._send(200, {
                 "results": [page_json(p, "body" in expand) for p in window],
