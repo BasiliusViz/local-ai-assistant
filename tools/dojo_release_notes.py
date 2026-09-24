@@ -7,9 +7,10 @@
 
     python dojo_release_notes.py --url https://dojo.company.local --product abinf --from release-1.1 --to release-1.2
 
-Ключ — ваш API v2 Key из профиля DefectDojo. Берётся из переменной
-DOJO_TOKEN, а если её нет — спрашивается со скрытым вводом. В командную
-строку его не писать: останется в истории.
+Ключ — ваш API v2 Key из профиля DefectDojo: --token, переменная
+DOJO_TOKEN или скрытый ввод при запуске (если не задано ни то, ни другое).
+--token удобен, но PowerShell сохраняет команду в историю
+(ConsoleHost_history.txt), а на время работы ключ виден в списке процессов.
 
 Устранённая уязвимость — открыта в --from (прошлый релиз) и не открыта в
 --to (новый): её закрыли или сканер её больше не находит. Честно это, когда
@@ -358,6 +359,10 @@ def build(dojo: Dojo, url: str, product: str, first: str, second: str) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Release notes по устранённым уязвимостям из DefectDojo")
     ap.add_argument("--url", default=os.getenv("DOJO_URL", ""), help="адрес DefectDojo, без /api/v2")
+    ap.add_argument(
+        "--token",
+        help="API v2 Key. Попадёт в историю команд; без него — DOJO_TOKEN или скрытый ввод",
+    )
     ap.add_argument("--product", required=True, help="продукт, можно неполно: abinf")
     ap.add_argument("--from", dest="first", required=True, help="прошлый релиз / engagement")
     ap.add_argument("--to", dest="second", required=True, help="новый релиз / engagement")
@@ -371,7 +376,11 @@ def main() -> int:
     if not args.url:
         print("Нужен адрес DefectDojo: --url https://dojo.company.local (или DOJO_URL)")
         return 2
-    token = os.getenv("DOJO_TOKEN") or getpass.getpass("Ключ DefectDojo (API v2 Key, ввод скрыт): ")
+    token = (
+        args.token
+        or os.getenv("DOJO_TOKEN")
+        or getpass.getpass("Ключ DefectDojo (API v2 Key, ввод скрыт): ")
+    )
     if not token.strip():
         print("Ключ пустой.")
         return 2
