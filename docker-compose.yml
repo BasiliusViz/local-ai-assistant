@@ -88,6 +88,7 @@ services:
       - JIRA_SINCE=${JIRA_SINCE:-}
       - JIRA_JQL=${JIRA_JQL:-}
       - JIRA_COMMENTS=${JIRA_COMMENTS:-1}
+      - JIRA_FIELDS=${JIRA_FIELDS:-}
       - JIRA_OUT=/docs/jira
       # DefectDojo индексируется отсюда же (образ общий), а отвечает на
       # вопросы отдельный сервер dojo — см. ниже:

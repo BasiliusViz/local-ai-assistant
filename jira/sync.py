@@ -36,6 +36,8 @@
     JIRA_SINCE      глубина истории: 30d, 6M или 2026-08-01
     JIRA_JQL        дополнительное условие, если нужно что-то своё
     JIRA_COMMENTS   1 — тянуть комментарии (по умолчанию), 0 — только описания
+    JIRA_FIELDS     свои поля через запятую: «Стрим заказчика,customfield_12345».
+                    Эпик и спринт находятся сами. Какие поля есть — --fields
     JIRA_OUT        куда складывать (по умолчанию ./jira/issues)
 
 Использование:
@@ -43,6 +45,7 @@
     python jira/sync.py --dry-run     показать, что будет выгружено
     python jira/sync.py               выгрузить изменившееся
     python jira/sync.py --full        игнорировать даты, выгрузить всё
+    python jira/sync.py --fields      какие доп. поля заполнены (для JIRA_FIELDS)
 
 Дальше выгруженное индексируется:
     docker compose exec kb python -m kb.jira_index /docs/jira
@@ -82,7 +85,16 @@ FIELDS = [
     "components",
     "created",
     "updated",
+    "fixVersions",
+    "parent",
 ]
+
+# Поля Jira Software узнаём по типу, а не по имени: имя зависит от языка
+# интерфейса («Epic Link» / «Ссылка на эпик»), а тип — нет. Номер
+# customfield_NNNNN у каждой Jira свой, поэтому зашивать его нельзя
+EPIC_LINK_TYPE = "com.pyxis.greenhopper.jira:gh-epic-link"
+EPIC_NAME_TYPE = "com.pyxis.greenhopper.jira:gh-epic-label"
+SPRINT_TYPE = "com.pyxis.greenhopper.jira:gh-sprint"
 
 # Сколько задач за один запрос. У Data Center потолок обычно 100 и настраивается
 # администратором; с комментариями ответ тяжёлый, поэтому берём с запасом вниз
@@ -276,6 +288,11 @@ class Client:
     def myself(self) -> dict:
         return self.get("/rest/api/2/myself")
 
+    def fields(self) -> list[dict]:
+        """Все поля Jira: id, отображаемое имя и тип (schema.custom)."""
+        data = self.get("/rest/api/2/field")
+        return data if isinstance(data, list) else []
+
     def count(self, jql: str) -> int:
         """Сколько задач под условие. maxResults=0 — Jira отдаёт только total."""
         return int(self.get("/rest/api/2/search", jql=jql, maxResults=0).get("total", 0))
@@ -306,14 +323,20 @@ class Client:
             if not issues or start >= int(data.get("total", 0)):
                 return
 
-    def search(self, jql: str, with_comments: bool, page_size: int = PAGE_SIZE):
+    def search(
+        self,
+        jql: str,
+        with_comments: bool,
+        page_size: int = PAGE_SIZE,
+        extra_fields: list[str] | None = None,
+    ):
         """Задачи под условие, постранично.
 
         Сортировка по updated ASC не случайна: если во время выгрузки кто-то
         правит задачи, при сортировке по убыванию они переезжают на первую
         страницу и сдвигают всё остальное — часть задач тогда пропускается.
         """
-        fields = list(FIELDS)
+        fields = list(FIELDS) + list(extra_fields or [])
         if with_comments:
             fields.append("comment")
 
@@ -415,13 +438,159 @@ def build_jql(
     return " AND ".join(parts)
 
 
-def normalize(issue: dict, base_url: str, comments: list[dict]) -> dict:
-    """Ответ Jira -> плоская запись, из которой строится индекс."""
+def field_map(all_fields: list[dict], wanted: list[str]) -> dict:
+    """Какие дополнительные поля забирать и как они называются.
+
+    Эпик и спринт находятся сами, по типу поля. Остальное перечисляется в
+    JIRA_FIELDS отображаемыми именами («Стрим заказчика») или номерами
+    (customfield_12345): имя удобнее, номер надёжнее, если имён два одинаковых.
+
+    Возвращает {"epic_link": id, "epic_name": id, "sprint": id,
+    "extra": {имя: id}, "missing": [чего не нашли]}.
+    """
+    out: dict = {"epic_link": "", "epic_name": "", "sprint": "", "extra": {}, "missing": []}
+    for fld in all_fields:
+        kind = (fld.get("schema") or {}).get("custom", "")
+        if kind == EPIC_LINK_TYPE and not out["epic_link"]:
+            out["epic_link"] = fld.get("id", "")
+        elif kind == EPIC_NAME_TYPE and not out["epic_name"]:
+            out["epic_name"] = fld.get("id", "")
+        elif kind == SPRINT_TYPE and not out["sprint"]:
+            out["sprint"] = fld.get("id", "")
+
+    by_id = {f.get("id", ""): f for f in all_fields}
+    by_name: dict[str, list[dict]] = {}
+    for fld in all_fields:
+        by_name.setdefault((fld.get("name") or "").strip().casefold(), []).append(fld)
+
+    for item in wanted:
+        if item in by_id:
+            fld = by_id[item]
+        else:
+            same = by_name.get(item.casefold(), [])
+            if not same:
+                out["missing"].append(item)
+                continue
+            if len(same) > 1:
+                ids = ", ".join(f.get("id", "") for f in same)
+                print(
+                    f"    [!] Полей с именем «{item}» несколько ({ids}), беру первое. "
+                    "Укажите в JIRA_FIELDS нужный номер"
+                )
+            fld = same[0]
+        fid = fld.get("id", "")
+        # Эпик и спринт и так едут отдельными полями, второй раз не нужен
+        if fid in (out["epic_link"], out["epic_name"], out["sprint"]):
+            continue
+        out["extra"][(fld.get("name") or fid).strip()] = fid
+    return out
+
+
+def field_text(value) -> list[str]:
+    """Значение поля любого типа -> список строк.
+
+    Поля Jira бывают строкой, числом, выбором из списка ({"value": ...}),
+    каскадным выбором (value + child), пользователем, версией, компонентом
+    и списком всего этого. Для поиска нужно одно: как значение читается.
+    """
+    if value is None or value == "" or value == []:
+        return []
+    if isinstance(value, bool):
+        return ["да" if value else "нет"]
+    if isinstance(value, (int, float)):
+        return [str(value)]
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, list):
+        out: list[str] = []
+        for v in value:
+            out.extend(field_text(v))
+        return out
+    if isinstance(value, dict):
+        if "value" in value:
+            text = str(value.get("value") or "").strip()
+            child = (value.get("child") or {}).get("value")
+            if child:
+                text = f"{text} / {child}"
+            return [text] if text else []
+        for k in ("displayName", "name", "key"):
+            if value.get(k):
+                return [str(value[k]).strip()]
+    return []
+
+
+# Старые Jira отдают спринт не объектом, а строкой toString() Java:
+# com.atlassian.greenhopper.service.sprint.Sprint@1f[id=12,state=ACTIVE,
+# name=Спринт 5, команда А,startDate=...]. В имени бывают запятые, поэтому
+# имя режем до следующего известного ключа, а не до первой запятой
+SPRINT_NAME = re.compile(
+    r"name=(.*?),(?:goal|startDate|endDate|completeDate|activatedDate|sequence|"
+    r"rapidViewId|autoStartStop|synced|incompleteIssuesDestinationId)="
+)
+SPRINT_STATE = re.compile(r"state=(\w+)")
+
+
+def sprints(value) -> list[dict]:
+    """Поле «Спринт» -> [{"name": ..., "state": "active|closed|future"}]."""
+    out = []
+    for item in value or []:
+        if isinstance(item, dict):
+            name = (item.get("name") or "").strip()
+            state = (item.get("state") or "").strip().lower()
+        else:
+            text = str(item)
+            m = SPRINT_NAME.search(text)
+            if not m:
+                m = re.search(r"name=([^,\]]*)", text)
+            name = m.group(1).strip() if m else ""
+            s = SPRINT_STATE.search(text)
+            state = s.group(1).lower() if s else ""
+        if name:
+            out.append({"name": name, "state": state})
+    return out
+
+
+def normalize(
+    issue: dict,
+    base_url: str,
+    comments: list[dict],
+    fmap: dict | None = None,
+    epic_names: dict | None = None,
+) -> dict:
+    """Ответ Jira -> плоская запись, из которой строится индекс.
+
+    epic_names — {номер эпика: название}: у задачи в поле эпика только номер,
+    а спрашивают по названию («задачи эпика Импорт»).
+    """
     f = issue.get("fields", {}) or {}
+    fmap = fmap or {}
+    epic_names = epic_names or {}
     key = issue.get("key", "")
     status = f.get("status") or {}
     assignee = person(f.get("assignee"))
     reporter = person(f.get("reporter"))
+
+    # Эпик: у обычной задачи — ссылка на него, а у самого эпика есть
+    # «Имя эпика». Эпик считаем частью самого себя: «задачи эпика X» без него
+    # выглядели бы обрезанными
+    own_epic_name = ""
+    if fmap.get("epic_name"):
+        own_epic_name = " ".join(field_text(f.get(fmap["epic_name"])))
+    epic = ""
+    if fmap.get("epic_link"):
+        epic = " ".join(field_text(f.get(fmap["epic_link"])))
+    if own_epic_name and not epic:
+        epic = key
+    epic_name = own_epic_name if epic == key else epic_names.get(epic, "")
+
+    sprint_list = sprints(f.get(fmap["sprint"])) if fmap.get("sprint") else []
+    parent = f.get("parent") or {}
+
+    extra = {}
+    for name, fid in (fmap.get("extra") or {}).items():
+        vals = field_text(f.get(fid))
+        if vals:
+            extra[name] = vals
 
     return {
         "key": key,
@@ -442,6 +611,16 @@ def normalize(issue: dict, base_url: str, comments: list[dict]) -> dict:
         "reporter_login": reporter["login"],
         "labels": list(f.get("labels") or []),
         "components": [c.get("name", "") for c in (f.get("components") or [])],
+        "fix_versions": field_text(f.get("fixVersions")),
+        "parent": parent.get("key", ""),
+        "parent_summary": ((parent.get("fields") or {}).get("summary") or "").strip(),
+        "epic": epic,
+        "epic_name": epic_name,
+        # Все спринты задачи: переходящая задача бывает в нескольких
+        "sprints": [s["name"] for s in sprint_list],
+        "active_sprints": [s["name"] for s in sprint_list if s["state"] == "active"],
+        # Поля из JIRA_FIELDS: {отображаемое имя: [значения]}
+        "fields": extra,
         "created": f.get("created") or "",
         "updated": f.get("updated") or "",
         "comments": [
@@ -453,6 +632,94 @@ def normalize(issue: dict, base_url: str, comments: list[dict]) -> dict:
             for c in comments
         ],
     }
+
+
+def epic_titles(
+    client: "Client", keys: set[str], fmap: dict, cache: dict
+) -> dict:
+    """Названия эпиков по номерам, с запоминанием между прогонами.
+
+    Эпик часто лежит в другом проекте или вне окна JIRA_SINCE, поэтому из
+    самой выгрузки его название не взять. Спрашиваем Jira одним запросом на
+    пачку номеров. Эпик, который токену не виден, запоминаем пустым, чтобы не
+    спрашивать про него каждый прогон.
+    """
+    todo = sorted(k for k in keys if k and k not in cache)
+    fields = "summary" + (f",{fmap['epic_name']}" if fmap.get("epic_name") else "")
+    for start in range(0, len(todo), 50):
+        part = todo[start : start + 50]
+        jql = "key in (" + ", ".join(part) + ")"
+        try:
+            data = client.get(
+                "/rest/api/2/search", jql=jql, maxResults=len(part), fields=fields
+            )
+        except JiraError:
+            # Один невидимый номер валит весь запрос (400) — тогда по одному
+            data = {"issues": []}
+            for k in part:
+                try:
+                    data["issues"].append(
+                        client.get(f"/rest/api/2/issue/{k}", fields=fields)
+                    )
+                except JiraError:
+                    pass
+        for issue in data.get("issues", []):
+            f = issue.get("fields") or {}
+            name = ""
+            if fmap.get("epic_name"):
+                name = " ".join(field_text(f.get(fmap["epic_name"])))
+            cache[issue.get("key", "")] = name or (f.get("summary") or "").strip()
+        for k in part:
+            cache.setdefault(k, "")
+    return cache
+
+
+def show_fields(client: "Client", jql: str, fmap: dict, sample: int = 100) -> int:
+    """--fields: какие поля реально заполнены в выгружаемых задачах.
+
+    Полей в Jira сотни, и по названию из интерфейса не всегда понятно, какое
+    из них нужно. Берём пробную порцию задач со всеми полями и показываем
+    заполненные — с примером значения. Отсюда имя и идёт в JIRA_FIELDS.
+    """
+    all_fields = {f.get("id", ""): f for f in client.fields()}
+    data = client.get(
+        "/rest/api/2/search",
+        jql=f"{jql} ORDER BY updated DESC",
+        maxResults=sample,
+        fields="*all",
+    )
+    issues = data.get("issues", [])
+    filled: dict[str, list] = {}
+    for issue in issues:
+        for fid, value in (issue.get("fields") or {}).items():
+            if not fid.startswith("customfield_"):
+                continue
+            text = sprints(value) if fid == fmap.get("sprint") else field_text(value)
+            if text:
+                filled.setdefault(fid, []).append(text)
+
+    auto = {fmap.get("epic_link"): "эпик", fmap.get("epic_name"): "имя эпика",
+            fmap.get("sprint"): "спринт"}
+    chosen = set((fmap.get("extra") or {}).values())
+    print(f"\nЗаполненные дополнительные поля в {len(issues)} последних задачах:\n")
+    rows = sorted(filled.items(), key=lambda kv: -len(kv[1]))
+    for fid, vals in rows:
+        name = (all_fields.get(fid) or {}).get("name", fid)
+        mark = f"[{auto[fid]}, берётся само]" if fid in auto else (
+            "[в JIRA_FIELDS]" if fid in chosen else ""
+        )
+        example = vals[0]
+        if isinstance(example, list) and example and isinstance(example[0], dict):
+            example = [s["name"] for s in example]
+        example = ", ".join(map(str, example))[:60]
+        print(f"  {len(vals):4}  {fid:20} {name[:40]:40} {mark}")
+        print(f"        пример: {example}")
+    print(
+        "\nНужные поля перечислите в .env через запятую, по имени или номеру:\n"
+        "    JIRA_FIELDS=Стрим заказчика,customfield_12345\n"
+        "Потом полная выгрузка и индексация: sync.py --full, jira_index --full"
+    )
+    return 0
 
 
 def load_state(path: Path) -> dict:
@@ -546,6 +813,11 @@ def main() -> int:
         help="сверка: убрать с диска задачи, вышедшие из охвата, и выйти",
     )
     ap.add_argument(
+        "--fields",
+        action="store_true",
+        help="показать заполненные дополнительные поля (для JIRA_FIELDS) и выйти",
+    )
+    ap.add_argument(
         "--force-prune",
         action="store_true",
         help="при сверке удалить, даже если вне охвата подозрительно много",
@@ -562,6 +834,9 @@ def main() -> int:
     since_env = (args.since or os.getenv("JIRA_SINCE", "")).strip()
     extra_jql = os.getenv("JIRA_JQL", "").strip()
     with_comments = os.getenv("JIRA_COMMENTS", "1").strip() != "0"
+    wanted_fields = [
+        x.strip() for x in os.getenv("JIRA_FIELDS", "").split(",") if x.strip()
+    ]
     out_dir = Path(os.getenv("JIRA_OUT", str(HERE / "issues")))
 
     if not url or not (token or user):
@@ -602,6 +877,40 @@ def main() -> int:
     if extra_jql:
         print(f"Доп. условие: {extra_jql}")
     print(f"Комментарии: {'да' if with_comments else 'нет'}")
+
+    # Без списка полей выгрузка всё равно работает — просто без эпиков,
+    # спринтов и своих полей. Ронять из-за этого весь прогон незачем
+    try:
+        fmap = field_map(client.fields(), wanted_fields)
+    except JiraError as e:
+        print(f"    [!] Список полей Jira не получен, эпики и спринты не поедут: {e}")
+        fmap = field_map([], [])
+    found = [
+        name
+        for name, fid in (("эпик", fmap["epic_link"]), ("спринт", fmap["sprint"]))
+        if fid
+    ] + list(fmap["extra"])
+    print(f"Доп. поля: {', '.join(found) if found else 'нет'}")
+    if fmap["missing"]:
+        print(
+            f"    [!] В Jira нет полей: {', '.join(fmap['missing'])}. "
+            "Имена и номера видны в python jira/sync.py --fields"
+        )
+    extra_ids = [
+        fid
+        for fid in [fmap["epic_link"], fmap["epic_name"], fmap["sprint"]]
+        + list(fmap["extra"].values())
+        if fid
+    ]
+
+    if args.fields:
+        try:
+            return show_fields(
+                client, build_jql(projects, team, window, extra_jql, None), fmap
+            )
+        except JiraError as e:
+            print(f"\n{e}")
+            return 1
 
     if args.check:
         for project in projects:
@@ -657,50 +966,85 @@ def main() -> int:
     stats = {"новых": 0, "обновлено": 0, "ошибок": 0}
     processed = 0
 
+    # Названия эпиков помним между прогонами: иначе каждый прогон заново
+    # спрашивал бы про одни и те же эпики. --full сбрасывает — эпик могли
+    # переименовать
+    epics_path = out_dir / ".epics.json"
+    epic_cache: dict = {} if args.full else load_state(epics_path)
+
+    def flush(batch: list[dict]) -> None:
+        """Пачка задач -> файлы. Пачкой — чтобы названия эпиков спросить разом."""
+        if fmap["epic_link"]:
+            wanted = {
+                " ".join(field_text((i.get("fields") or {}).get(fmap["epic_link"])))
+                for i in batch
+            }
+            try:
+                epic_titles(client, wanted, fmap, epic_cache)
+            except JiraError as e:
+                print(f"  [!] названия эпиков не получены ({e})")
+        for issue in batch:
+            save(issue)
+
+    def save(issue: dict) -> None:
+        key = issue.get("key", "")
+        fields = issue.get("fields", {}) or {}
+        comments: list[dict] = []
+        if with_comments:
+            block = fields.get("comment") or {}
+            comments = block.get("comments") or []
+            # Обсуждение длиннее одной порции — дочитываем отдельно.
+            # Иначе у самых обсуждаемых задач (а они обычно и самые
+            # интересные) в индекс попадёт только начало разговора
+            if int(block.get("total", 0)) > len(comments):
+                try:
+                    comments = client.comments(key)
+                except JiraError as e:
+                    print(f"  [!] {key}: комментарии не дочитаны ({e})")
+
+        record = normalize(issue, client.base, comments, fmap, epic_cache)
+        # Эпик выгрузился сам — его название свежее запомненного
+        if record["epic"] == key and record["epic_name"]:
+            epic_cache[key] = record["epic_name"]
+        target = out_dir / record["project"] / f"{key}.json"
+        action = "обновлено" if target.exists() else "новых"
+        stats[action] += 1
+
+        if args.dry_run:
+            extra = ""
+            if record["epic"]:
+                extra += f" эпик {record['epic']}"
+            if record["sprints"]:
+                extra += f" спринт {record['sprints'][-1]}"
+            print(
+                f"  [{action:9}] {key:14} {record['summary'][:60]} "
+                f"(комментариев: {len(comments)}){extra}"
+            )
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+    batch: list[dict] = []
     try:
-        for issue in client.search(jql, with_comments):
+        for issue in client.search(jql, with_comments, extra_fields=extra_ids):
             if args.limit and processed >= args.limit:
                 break
             processed += 1
-
-            key = issue.get("key", "")
-            fields = issue.get("fields", {}) or {}
 
             if args.dump_raw and processed == 1:
                 Path(args.dump_raw).write_text(client.last_raw, encoding="utf-8")
                 print(f"\nСырой ответ сохранён: {args.dump_raw}")
 
-            comments: list[dict] = []
-            if with_comments:
-                block = fields.get("comment") or {}
-                comments = block.get("comments") or []
-                # Обсуждение длиннее одной порции — дочитываем отдельно.
-                # Иначе у самых обсуждаемых задач (а они обычно и самые
-                # интересные) в индекс попадёт только начало разговора
-                if int(block.get("total", 0)) > len(comments):
-                    try:
-                        comments = client.comments(key)
-                    except JiraError as e:
-                        print(f"  [!] {key}: комментарии не дочитаны ({e})")
-
-            record = normalize(issue, client.base, comments)
-            target = out_dir / record["project"] / f"{key}.json"
-            action = "обновлено" if target.exists() else "новых"
-            stats[action] += 1
-
-            if args.dry_run:
-                print(
-                    f"  [{action:9}] {key:14} {record['summary'][:60]} "
-                    f"(комментариев: {len(comments)})"
-                )
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(
-                    json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
+            batch.append(issue)
+            if len(batch) >= PAGE_SIZE:
+                flush(batch)
+                batch = []
 
             if processed % 100 == 0:
                 print(f"    ...{processed} из {total}")
+        flush(batch)
     except JiraError as e:
         print(f"\nВыгрузка прервана: {e}")
         return 1
@@ -711,6 +1055,9 @@ def main() -> int:
 
     if not args.dry_run:
         state_path.parent.mkdir(parents=True, exist_ok=True)
+        epics_path.write_text(
+            json.dumps(epic_cache, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         state_path.write_text(
             json.dumps(
                 {

@@ -44,7 +44,7 @@ MAX_CHUNK_CHARS = 1500
 # поменять, как задача режется на чанки, хеши JSON-файлов останутся прежними,
 # и без этой отметки индексатор решил бы, что пересчитывать нечего. Меняется
 # вручную вместе с логикой нарезки
-JIRA_CHUNKER_VERSION = 1
+JIRA_CHUNKER_VERSION = 2  # 2: эпик, спринт, версии, свои поля (JIRA_FIELDS)
 
 # Поля задачи, по которым фильтруем. Без индекса Qdrant тоже отфильтрует, но
 # полным перебором коллекции — на десятках тысяч чанков это заметно
@@ -58,7 +58,47 @@ JIRA_INDEXED_FIELDS = (
     "assignee_login",
     "reporter",
     "labels",
+    "epic",
+    "epic_name",
+    "sprints",
+    "active_sprints",
+    "parent",
+    "field_values",
 )
+
+# Разделитель имени поля и значения в field_values. Не двоеточие: оно
+# встречается и в названиях полей, и в значениях
+FIELD_SEP = "="
+
+
+def field_values(issue: dict) -> list[str]:
+    """Все «прочие» поля задачи одним списком строк «Имя=значение».
+
+    Своих полей (JIRA_FIELDS) у каждой Jira сколько угодно, и заводить под
+    каждое отдельный ключ payload и отдельный аргумент инструмента нельзя.
+    Один индексируемый список вида «Стрим заказчика=Розница» даёт фильтр по
+    любому полю, а поиск по имени поля делает kb/jira_retriever.py.
+    Стандартные поля кладём сюда же — фильтр «компонент», «версия» и
+    «приоритет» получается тем же путём, без отдельных аргументов.
+    """
+    pairs: list[tuple[str, list[str]]] = [
+        ("Тип", [issue.get("type", "")]),
+        ("Приоритет", [issue.get("priority", "")]),
+        ("Резолюция", [issue.get("resolution", "")]),
+        ("Компоненты", issue.get("components") or []),
+        ("Метки", issue.get("labels") or []),
+        ("Исправить в версиях", issue.get("fix_versions") or []),
+    ]
+    pairs += list((issue.get("fields") or {}).items())
+    out = []
+    for name, vals in pairs:
+        if isinstance(vals, str):
+            vals = [vals]
+        for v in vals:
+            v = str(v).strip()
+            if v:
+                out.append(f"{name}{FIELD_SEP}{v}")
+    return out
 
 
 def ensure_jira_indexes(client: QdrantClient, collection: str) -> None:
@@ -140,6 +180,25 @@ def issue_chunks(issue: dict) -> list[dict]:
         card.append(f"Метки: {', '.join(issue['labels'])}.")
     if issue.get("components"):
         card.append(f"Компоненты: {', '.join(issue['components'])}.")
+    # Эпик, спринт и свои поля — тоже в текст, а не только в фильтр: вопрос
+    # «что в эпике про импорт» модель нередко отдаёт целиком в query
+    if issue.get("epic"):
+        if issue["epic"] == issue["key"]:
+            card.append(f"Это эпик «{issue.get('epic_name', '')}».")
+        else:
+            name = f" «{issue['epic_name']}»" if issue.get("epic_name") else ""
+            card.append(f"Эпик: {issue['epic']}{name}.")
+    if issue.get("parent"):
+        card.append(
+            f"Родительская задача: {issue['parent']} {issue.get('parent_summary', '')}".rstrip()
+            + "."
+        )
+    if issue.get("sprints"):
+        card.append(f"Спринт: {', '.join(issue['sprints'])}.")
+    if issue.get("fix_versions"):
+        card.append(f"Исправить в версиях: {', '.join(issue['fix_versions'])}.")
+    for name, vals in (issue.get("fields") or {}).items():
+        card.append(f"{name}: {', '.join(vals)}.")
 
     body = split_body(issue.get("description", ""))
     head = " ".join(card)
@@ -273,6 +332,7 @@ def main() -> int:
         project = issue.get("project", "")
         title = f"{key}: {issue.get('summary', '')}"
         updated = iso(issue.get("updated", ""))
+        values = field_values(issue)
 
         for start in range(0, len(chunks), args.batch):
             batch = chunks[start : start + args.batch]
@@ -315,6 +375,16 @@ def main() -> int:
                             "reporter": issue.get("reporter", ""),
                             "reporter_login": issue.get("reporter_login", ""),
                             "labels": issue.get("labels", []),
+                            "components": issue.get("components", []),
+                            "fix_versions": issue.get("fix_versions", []),
+                            "epic": issue.get("epic", ""),
+                            "epic_name": issue.get("epic_name", ""),
+                            "parent": issue.get("parent", ""),
+                            "sprints": issue.get("sprints", []),
+                            "active_sprints": issue.get("active_sprints", []),
+                            # Для показа — как есть, для фильтра — плоско
+                            "fields": issue.get("fields", {}),
+                            "field_values": values,
                             "chunk_kind": chunk["kind"],
                         },
                     )

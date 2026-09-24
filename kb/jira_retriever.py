@@ -71,6 +71,10 @@ class Issue:
     reporter: str
     url: str
     updated: str
+    epic: str = ""
+    epic_name: str = ""
+    sprints: tuple = ()
+    fields: dict | None = None
     snippet: str = ""
     found_in: str = ""
     score: float = 0.0
@@ -80,7 +84,7 @@ class Issue:
     show_text: bool = False
 
     def as_dict(self, detailed: bool = False) -> dict:
-        out = {
+        out: dict = {
             "key": self.key,
             "summary": self.summary,
             "status": self.status,
@@ -88,6 +92,12 @@ class Issue:
             "updated": self.updated[:10],
             "url": self.url,
         }
+        # Эпик и спринт — в любом виде ответа: про них спрашивают часто, а
+        # места занимают мало. Пустые не кладём, чтобы не забивать контекст
+        if self.epic:
+            out["epic"] = f"{self.epic} «{self.epic_name}»" if self.epic_name else self.epic
+        if self.sprints:
+            out["sprint"] = self.sprints[-1]
         if detailed:
             out.update(
                 {
@@ -99,6 +109,10 @@ class Issue:
                     "score": round(self.score, 4),
                 }
             )
+            if len(self.sprints) > 1:
+                out["sprints"] = list(self.sprints)
+            if self.fields:
+                out["fields"] = {k: ", ".join(v) for k, v in self.fields.items()}
         elif (self.score > 0 or self.show_text) and self.snippet:
             # Цитату кладём, только когда задача НАЙДЕНА по смыслу: там она и
             # есть ответ. В простой выборке («что на Иванове») это была бы
@@ -259,6 +273,160 @@ def _status_conditions(status: str) -> list[models.FieldCondition]:
     )
 
 
+CURRENT_WORDS = ("текущ", "активн", "нынешн", "этот", "current", "active")
+
+# Разделитель имени и значения в field_values — тот же, что в kb/jira_index.py
+FIELD_SEP = "="
+
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"\w+", _norm(text))
+
+
+def match_values(wanted: str, known: list[str]) -> list[str]:
+    """Значение из вопроса -> подходящие значения из базы.
+
+    По возрастанию вольности: точное совпадение, потом все слова вопроса есть
+    среди слов значения, потом просто вхождение. Слова, а не подстрока, —
+    ради спринтов: «спринт 1» не должен цеплять «Спринт 12» и «Спринт 15».
+    """
+    w = _norm(wanted)
+    if not w:
+        return []
+    exact = [k for k in known if _norm(k) == w]
+    if exact:
+        return exact
+    want_tokens = _tokens(wanted)
+    by_words = [k for k in known if want_tokens and set(want_tokens) <= set(_tokens(k))]
+    if by_words:
+        return by_words
+    return [k for k in known if w in _norm(k)]
+
+
+def _epic_conditions(epic: str) -> tuple[list, str]:
+    """Эпик номером («DEVSEC-100») или названием («Импорт») -> условие."""
+    wanted = epic.strip()
+    if ISSUE_KEY.match(wanted):
+        key = wanted.upper()
+        return (
+            [models.FieldCondition(key="epic", match=models.MatchValue(value=key))],
+            key,
+        )
+    known = values("epic_name", limit=2000)
+    hit = match_values(wanted, known)
+    if not hit:
+        raise JiraSearchError(
+            f"Эпика «{epic}» среди задач нет. "
+            + (f"Есть: {', '.join(known[:30])}." if known else
+               "Эпиков в индексе нет: поле эпика не выгружено (python jira/sync.py "
+               "--fields, затем полная выгрузка).")
+        )
+    if len(hit) > 5:
+        raise JiraSearchError(
+            f"Под «{epic}» подходит слишком много эпиков: {', '.join(hit[:15])}. "
+            "Уточни название или дай номер эпика."
+        )
+    return (
+        [models.FieldCondition(key="epic_name", match=models.MatchAny(any=hit))],
+        "; ".join(hit),
+    )
+
+
+def _sprint_conditions(sprint: str) -> tuple[list, str]:
+    """Спринт названием или словами «текущий»/«активный» -> условие."""
+    wanted = _norm(sprint)
+    if any(w in wanted for w in CURRENT_WORDS) and not re.search(r"\d", wanted):
+        active = values("active_sprints", limit=500)
+        if not active:
+            raise JiraSearchError(
+                "Активных спринтов в индексе нет: либо спринты не выгружены, "
+                "либо на момент выгрузки ни один не был открыт."
+            )
+        return (
+            [models.FieldCondition(key="active_sprints", match=models.MatchAny(any=active))],
+            "активные: " + "; ".join(active),
+        )
+    known = values("sprints", limit=2000)
+    hit = match_values(sprint, known)
+    if not hit:
+        raise JiraSearchError(
+            f"Спринта «{sprint}» среди задач нет. "
+            + (f"Есть: {', '.join(known[-30:])}." if known else
+               "Спринтов в индексе нет: поле спринта не выгружено.")
+        )
+    return (
+        [models.FieldCondition(key="sprints", match=models.MatchAny(any=hit))],
+        "; ".join(hit),
+    )
+
+
+def field_catalog() -> dict[str, dict[str, int]]:
+    """Все «прочие» поля задач: {имя поля: {значение: сколько чанков}}."""
+    out: dict[str, dict[str, int]] = {}
+    try:
+        res = client().facet(
+            collection_name=config.COLLECTION,
+            key="field_values",
+            facet_filter=_jira_only(),
+            limit=10000,
+        )
+    except Exception as e:
+        log.debug("facet по field_values не сработал: %s", e)
+        return out
+    for h in res.hits:
+        name, sep, val = str(h.value).partition(FIELD_SEP)
+        if sep:
+            out.setdefault(name, {})[val] = h.count
+    return out
+
+
+def resolve_field(field: str, catalog: dict | None = None) -> str:
+    """Имя поля из вопроса («стрим», «компонент») -> имя в базе."""
+    catalog = field_catalog() if catalog is None else catalog
+    names = list(catalog)
+    hit = match_values(field, names)
+    if not hit:
+        # «стрим заказчиков» против «Стрим заказчика»: сравниваем по началам слов
+        stems = [t[:5] for t in _tokens(field)]
+        hit = [
+            n for n in names
+            if stems and all(any(t.startswith(s) for t in _tokens(n)) for s in stems)
+        ]
+    if not hit:
+        raise JiraSearchError(
+            f"Поля «{field}» среди задач нет. "
+            + (f"Есть: {', '.join(sorted(names))}. " if names else "")
+            + "Своё поле попадает в индекс, только если оно перечислено в "
+            "JIRA_FIELDS при выгрузке."
+        )
+    if len(hit) > 1:
+        raise JiraSearchError(
+            f"Под «{field}» подходит несколько полей: {', '.join(hit)}. Уточни."
+        )
+    return hit[0]
+
+
+def _field_conditions(field: str, value: str) -> tuple[list, str]:
+    catalog = field_catalog()
+    name = resolve_field(field, catalog)
+    known = list(catalog.get(name, {}))
+    hit = match_values(value, known)
+    if not hit:
+        raise JiraSearchError(
+            f"У поля «{name}» нет значения «{value}». "
+            f"Есть: {', '.join(sorted(known)[:40])}."
+        )
+    return (
+        [
+            models.FieldCondition(
+                key="field_values",
+                match=models.MatchAny(any=[f"{name}{FIELD_SEP}{v}" for v in hit]),
+            )
+        ],
+        f"{name} = {'; '.join(hit)}",
+    )
+
+
 def _dedupe(points, limit: int) -> list[Issue]:
     """Чанки -> задачи.
 
@@ -291,6 +459,10 @@ def _dedupe(points, limit: int) -> list[Issue]:
             reporter=pl.get("reporter", ""),
             url=pl.get("url", ""),
             updated=pl.get("updated_at", ""),
+            epic=pl.get("epic", ""),
+            epic_name=pl.get("epic_name", ""),
+            sprints=tuple(pl.get("sprints") or ()),
+            fields=pl.get("fields") or None,
             snippet=pl.get("text", ""),
             found_in="комментарий"
             if pl.get("chunk_kind") == "comment"
@@ -353,6 +525,10 @@ def search_issues(
     status: str | None = None,
     issue_key: str | None = None,
     top_k: int = 10,
+    epic: str | None = None,
+    sprint: str | None = None,
+    field: str | None = None,
+    field_value: str | None = None,
 ) -> JiraResult:
     """Задачи под условия. Хотя бы одно условие должно быть задано."""
     if role not in ("assignee", "reporter"):
@@ -427,10 +603,31 @@ def search_issues(
             for c in conditions
         )
 
+    if epic:
+        conditions, shown = _epic_conditions(epic)
+        must.extend(conditions)
+        applied["epic"] = shown
+
+    if sprint:
+        conditions, shown = _sprint_conditions(sprint)
+        must.extend(conditions)
+        applied["sprint"] = shown
+
+    if field:
+        if not field_value:
+            raise JiraSearchError(
+                "Для поля нужно и значение (field_value). Какие значения есть, "
+                "показывает вызов с одним field."
+            )
+        conditions, shown = _field_conditions(field, field_value)
+        must.extend(conditions)
+        applied["field"] = shown
+
     filtered = len(must) > 1  # что-то кроме обязательного source=jira
     if not filtered and not query:
         raise JiraSearchError(
-            "Нужно хотя бы одно условие: человек, проект, статус или вопрос."
+            "Нужно хотя бы одно условие: человек, проект, статус, эпик, спринт, "
+            "поле или вопрос."
         )
 
     flt = models.Filter(must=must)

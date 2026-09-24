@@ -282,6 +282,10 @@ def jira_search(
     project: str | None = None,
     status: str | None = None,
     issue_key: str | None = None,
+    epic: str | None = None,
+    sprint: str | None = None,
+    field: str | None = None,
+    field_value: str | None = None,
     top_k: int = 25,
     response_format: str = "concise",
 ) -> dict:
@@ -303,8 +307,15 @@ def jira_search(
       «@jira задачи Петрова про импорт» -> person="Петров", query="импорт"
       «@jira где обсуждали дедупликацию» -> query="дедупликация"
       «@jira что там с DEVSEC-412»      -> issue_key="DEVSEC-412"
+      «@jira задачи эпика Импорт»       -> epic="Импорт"
+      «@jira что в текущем спринте»     -> sprint="текущий"
+      «@jira что в спринте 42 на Петрове» -> sprint="42", person="Петров"
+      «@jira задачи стрима заказчика Розница»
+                                        -> field="Стрим заказчика", field_value="Розница"
+      «@jira какие бывают стримы заказчика» -> field="Стрим заказчика" (без значения)
     Если положить фамилию в query, поиск будет искать её в ТЕКСТЕ задач, а там
-    её нет: исполнитель хранится отдельным полем. Это главная ошибка.
+    её нет: исполнитель хранится отдельным полем. Это главная ошибка. То же с
+    эпиком, спринтом, компонентом, версией и любым другим полем задачи.
 
     query нужен, только когда в вопросе есть смысловая часть — про что задача.
     Для «какие задачи на человеке» query не нужен вовсе: вернутся последние
@@ -322,6 +333,12 @@ def jira_search(
         issue_key: номер конкретной задачи, например "DEVSEC-412". Когда он
             задан, остальные условия не нужны. Номер НИКОГДА не кладут в query:
             там он ищется по смыслу и не находится
+        epic: эпик — номер ("DEVSEC-100") или название, можно неполное
+        sprint: спринт — название или номер ("42"), либо "текущий"
+        field: любое другое поле задачи: "Стрим заказчика", "Компоненты",
+            "Исправить в версиях", "Приоритет", "Тип", "Метки" и свои поля
+            компании. Без field_value вернёт список значений этого поля
+        field_value: значение поля field, можно неполное
         top_k: сколько задач вернуть, по умолчанию 25
         response_format: "concise" (по умолчанию) — номер, заголовок, статус,
             исполнитель, ссылка. "detailed" — плюс тип, приоритет, автор и
@@ -348,6 +365,16 @@ def jira_search(
         }
 
     try:
+        # Поле без значения — вопрос «какие бывают», а не выборка задач
+        if field and not field_value:
+            catalog = jira_retriever.field_catalog()
+            name = jira_retriever.resolve_field(field, catalog)
+            counts = catalog.get(name, {})
+            return {
+                "field": name,
+                "values": sorted(counts, key=lambda v: -counts[v])[:100],
+                "hint": "Задачи с нужным значением: тот же вызов с field_value.",
+            }
         result = jira_retriever.search_issues(
             query=query,
             person=person,
@@ -356,6 +383,10 @@ def jira_search(
             status=status,
             issue_key=issue_key,
             top_k=top_k,
+            epic=epic,
+            sprint=sprint,
+            field=field,
+            field_value=field_value,
         )
         issues, applied = result.issues, result.applied
     except JiraSearchError as e:
@@ -369,7 +400,7 @@ def jira_search(
 
     if not issues:
         hint = "Под эти условия задач нет."
-        if query and (person or project or status):
+        if query and (person or project or status or epic or sprint or field):
             hint += (
                 " Возможно, дело в query: попробуй без него — фильтров может "
                 "быть достаточно."
