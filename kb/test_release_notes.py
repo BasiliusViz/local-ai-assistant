@@ -10,6 +10,7 @@ main -> feature-x: устранена 2 (Critical), новая 12 (Critical), в
 from __future__ import annotations
 
 import io
+import re
 import sys
 import tempfile
 import unittest
@@ -108,6 +109,47 @@ class ReleaseNotesTest(unittest.TestCase):
         result = dojo_compare.compare("abinf", "main", "feature-x", "open", None, 1000)
         text = release_notes.render(result, [], True, max_items=0)
         self.assertIn("_Показано 0 из 1.", text)
+
+    # --- автономный скрипт tools/dojo_release_notes.py
+
+    def standalone(self):
+        import importlib.util
+
+        path = Path(__file__).resolve().parent.parent / "tools" / "dojo_release_notes.py"
+        if not path.exists():
+            self.skipTest(f"нет {path}")
+        spec = importlib.util.spec_from_file_location("dojo_release_notes", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_standalone_same_document(self):
+        # Логика продублирована, чтобы скрипт жил одним файлом без
+        # зависимостей. Этот тест не даёт двум копиям разойтись
+        sa = self.standalone()
+
+        class FakeDojo(sa.Dojo):
+            def get(self, path, **params):
+                if path == "/products/":
+                    return {"count": 1, "results": [PRODUCT]}
+                return fake_get(None, path, **params)
+
+        url = "https://dojo.local"
+        with mock.patch("sys.stderr", io.StringIO()):
+            result = sa.build(FakeDojo(url, "t"), url, "abinf", "main", "feature-x")
+        for levels, with_new in (([], False), ([], True), (["High"], True)):
+            server_side, _ = release_notes.build(
+                "abinf", "main", "feature-x",
+                ",".join(levels), with_new,
+            )
+            self.assertEqual(sa.render(result, levels, with_new), server_side, (levels, with_new))
+
+    def test_standalone_only_reads(self):
+        sa = self.standalone()
+        source = Path(sa.__file__).read_text(encoding="utf-8")
+        # в скрипте нет ни одного метода, кроме GET
+        self.assertEqual(re.findall(r'method="(\w+)"', source), ["GET"])
+        self.assertNotIn("_create_unverified_context", source)
 
     def test_plural(self):
         words = ("уязвимость", "уязвимости", "уязвимостей")

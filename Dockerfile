@@ -33,6 +33,8 @@ COPY selftest.py ./
 # Правила Continue — для замера выбора инструментов (kb.dojo_tool_eval):
 # модель должна видеть ровно тот системный промпт, что в Continue
 COPY continue-rules.yaml ./
+# Автономный скрипт release notes: тест сверяет его документ с серверным
+COPY tools/ ./tools/
 
 # Внутри контейнера localhost - это сам контейнер, а не хост.
 # Соседние сервисы доступны по именам из compose.

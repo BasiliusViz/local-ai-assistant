@@ -91,6 +91,8 @@ jira/        sync.py, cron.sh, README
 dojo/        cron.sh
 repos/       sync.py (клон Bitbucket/GitFlic по токену), list.example.txt, тесты
 code/        образ code-graph: Graphify + jenkins_graph.py (шаги Jenkins в графе)
+tools/       dojo_release_notes.py — release notes одним файлом, только stdlib, для
+             запуска у пользователя без сервера и модели (тест сверяет с kb/release_notes)
 testdocs/, corpus/   стенд замеров качества поиска (не прод)
 guides/      DEPLOY (развёртывание), USER-GUIDE (для пользователей), HAND-TEST
              (ручная проверка), OASIS-TEST, HANDOFF, HISTORY, presentation/
