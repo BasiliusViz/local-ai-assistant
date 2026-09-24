@@ -77,6 +77,42 @@ curl -s -X POST http://localhost:8010/mcp -H "Content-Type: application/json" -H
 
 Должны быть найденные фрагменты, а не ошибка.
 
+### 6а. Jira: эпики, спринты и свои поля
+
+В контейнере новый код выгрузки. Должно быть `2`, `0` — не было `--build`:
+
+```bash
+docker compose exec kb grep -c "EPIC_LINK_TYPE" jira/sync.py
+```
+
+В выгруженных задачах есть новые поля. Команда берёт первый файл задачи и
+печатает его имя и строки с эпиком, спринтами и своими полями:
+
+```bash
+docker compose exec kb sh -c 'f=$(find /docs/jira -name "*.json" ! -name ".*" | head -1); echo $f; grep -E "\"(epic|epic_name|sprints|fields)\"" $f'
+```
+
+- строки `"epic"`, `"sprints"`, `"fields"` есть (пустые значения — тоже
+  норма, если у задачи эпика нет) — файлы новые, сразу к индексации;
+- только имя файла — файлы выгружены старым кодом, нужна перевыгрузка:
+
+```bash
+docker compose exec kb python jira/sync.py --full
+```
+
+В начале вывода — `Доп. поля: эпик, спринт, ...`. `Доп. поля: нет` —
+остановиться и прислать вывод: Jira не отдала поля эпика и спринта. Затем:
+
+```bash
+docker compose exec kb python -m kb.jira_index /docs/jira --full
+```
+
+Эпики попали в индекс — должен быть список названий, а не `[]`:
+
+```bash
+docker compose exec kb python -c "from kb import jira_retriever as j; print(j.values('epic_name', limit=20))"
+```
+
 ### 7. Автотесты
 
 ```bash
@@ -97,6 +133,14 @@ docker compose exec kb python -m kb.test_dojo_readonly
 
 ```bash
 docker compose exec kb python confluence/test_sync.py
+```
+
+```bash
+docker compose exec kb python -m kb.test_jira
+```
+
+```bash
+docker compose exec kb python jira/test_sync.py
 ```
 
 В конце каждого `OK`. Тесты с Qdrant заводят временные коллекции и сами их
