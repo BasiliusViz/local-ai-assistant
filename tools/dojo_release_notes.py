@@ -117,9 +117,12 @@ class Dojo:
             results = data.get("results", [])
             out += results
             offset += len(results)
-            print(f"  {path} {offset}/{data.get('count', '?')}", file=sys.stderr, end="\r")
+            print(
+                f"  получено {offset} из {data.get('count', '?')}",
+                file=sys.stderr, end="\r", flush=True,
+            )
             if not results or offset >= int(data.get("count", 0)):
-                print(file=sys.stderr)
+                print(file=sys.stderr, flush=True)
                 return out
 
 
@@ -336,16 +339,25 @@ def render(result: dict, levels: list[str], with_new: bool) -> str:
     return "\n".join(out)
 
 
+def say(text: str) -> None:
+    # stderr и сразу: на медленном DefectDojo первый ответ идёт долго, и без
+    # этого запуск выглядит зависшим — ни вывода, ни ошибки
+    print(text, file=sys.stderr, flush=True)
+
+
 def build(dojo: Dojo, url: str, product: str, first: str, second: str) -> dict:
+    say(f"Подключаюсь к {dojo.base}, ищу продукт «{product}»...")
     prod = find_product(dojo, product)
-    print(f"Продукт: {prod.get('name')}", file=sys.stderr)
+    say(f"Продукт: {prod.get('name')}. Список engagement'ов...")
     known = dojo.paged("/engagements/", product=prod["id"])
     a, b = find_engagement(first, known), find_engagement(second, known)
     if a.get("id") == b.get("id"):
         raise DojoError(f"Оба названия указывают на один engagement: {a.get('name')}.")
-    print(f"Сравниваю: {a.get('name')} -> {b.get('name')}", file=sys.stderr)
+    say(f"Сравниваю: {a.get('name')} -> {b.get('name')}. Находки {a.get('name')}...")
     in_a = open_findings(dojo.paged("/findings/", test__engagement=a["id"], ordering="id"))
+    say(f"Находки {b.get('name')}...")
     in_b = open_findings(dojo.paged("/findings/", test__engagement=b["id"], ordering="id"))
+    say("Собираю документ...")
     return {
         "product": prod.get("name", ""),
         "first": a.get("name"),
@@ -390,7 +402,7 @@ def main() -> int:
         dojo = Dojo(args.url, token.strip(), ca_file=args.ca_file, timeout=args.timeout)
         result = build(dojo, args.url, args.product, args.first, args.second)
     except DojoError as e:
-        print(f"\n{e}")
+        print(f"\nОшибка: {e}", flush=True)
         return 1
 
     text = render(result, levels, args.with_new)
