@@ -253,6 +253,8 @@ check_mcp() {
   if [ -z "$tools" ]; then
     if [ "$port" = 8012 ]; then
       warn "$port: не отвечает (доступ к DefectDojo открыт не всем; не нужен — запустите с --no-dojo)"
+    elif [ "$port" = 8013 ]; then
+      warn "$port: граф релиза CB18.5 не отвечает — на сервере не поднят cb-graph (./update-cb.sh)"
     else
       bad "$port: не отвечает"
     fi
@@ -264,6 +266,7 @@ check_mcp() {
 }
 check_mcp 8010 kb_search
 check_mcp 8011 get_neighbors
+check_mcp 8013 cb_get_neighbors
 [ "$NO_DOJO" = 1 ] || check_mcp 8012 dojo_findings
 
 # ---------------------------------------------------------------- summary
@@ -275,6 +278,6 @@ else
 fi
 echo "  1. Закрыть VS Code полностью и открыть снова"
 echo "  2. Панель Continue -> ассистент Local Assistant -> режим Agent"
-echo "  3. Значок инструментов в строке ввода -> knowledge-base, code-graph, defectdojo -> Automatic"
+echo "  3. Значок инструментов в строке ввода -> knowledge-base, code-graph, cb-graph, defectdojo -> Automatic"
 echo "  4. Проверочные вопросы из раздела 4"
 exit "$FAILS"

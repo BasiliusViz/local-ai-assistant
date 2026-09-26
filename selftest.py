@@ -616,6 +616,7 @@ def main() -> int:
     ap.add_argument("--kb", default=os.getenv("SELFTEST_KB", "http://localhost:8010"))
     ap.add_argument("--code-graph", default=os.getenv("SELFTEST_CODE_GRAPH", "http://localhost:8011"))
     ap.add_argument("--dojo", default=os.getenv("SELFTEST_DOJO", "http://localhost:8012"))
+    ap.add_argument("--cb-graph", default=os.getenv("SELFTEST_CB_GRAPH", "http://localhost:8013"))
     ap.add_argument("--verbose", action="store_true", help="показывать подробности")
     ap.add_argument("--insecure", action="store_true", help="не проверять TLS")
     ap.add_argument("--skip-model", action="store_true", help="не трогать модель (долго)")
@@ -646,12 +647,21 @@ def main() -> int:
     check_qdrant(rep, args.qdrant.rstrip("/"), verify)
 
     kb_tools = check_mcp(
-        rep, "поиск", args.kb, ["kb_search", "code_search", "jira_search"], verify
+        rep, "поиск", args.kb, ["kb_search", "code_search", "cb_search", "jira_search"], verify
     )
     if "kb_search" in kb_tools:
         check_kb_tools(rep, args.kb, verify)
 
     check_mcp(rep, "граф кода", args.code_graph, [], verify)
+    # Граф релиза за прослойкой: имена должны прийти уже с префиксом cb_.
+    # Релиз есть не на каждом сервере — не отвечает, значит пропуск, не провал
+    try:
+        mcp_call(args.cb_graph, "tools/list", None, verify)
+    except (requests.RequestException, RuntimeError, KeyError) as e:
+        rep.section(f"MCP: граф релиза CB18.5 ({args.cb_graph})")
+        rep.skip("сервер отвечает", f"cb-graph не поднят ({why(e)}) — ./update-cb.sh")
+    else:
+        check_mcp(rep, "граф релиза CB18.5", args.cb_graph, ["cb_get_neighbors"], verify)
 
     dojo_tools = check_mcp(rep, "уязвимости", args.dojo, ["dojo_findings"], verify)
     if "dojo_findings" in dojo_tools and os.getenv("DOJO_PRODUCTS", "").strip():

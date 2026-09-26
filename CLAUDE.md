@@ -31,6 +31,7 @@
 | `qdrant` | 6333 | векторная база: `knowledge` (документы, Jira, Dojo), `code` |
 | `kb` | 8010 | MCP: `kb_search` (документы), `code_search` (код), `jira_search` |
 | `code-graph` | 8011 | MCP Graphify: граф вызовов кода (кто вызывает, что сломается) |
+| `cb-graph` | 8013 | граф кода релиза CB18.5, инструменты `cb_*` (прослойка `code/mcp_prefix.py`); поиск по релизу — `cb_search` в `kb` |
 | `dojo` | 8012 | MCP: `dojo_findings`, `dojo_engagements`, `dojo_compare`, `dojo_release_notes`. Отдельный порт ради доступа: только AppSec |
 | `reranker` | 8081 | выключен, профиль `quality` |
 
@@ -45,6 +46,7 @@ Ollama стек **не разворачивает**. Видеокарта сер
 | Jira (Server/DC) | `jira/sync.py` -> `.json` | `kb.jira_index /docs/jira` | `jira_search` |
 | DefectDojo | нет, API напрямую | `kb.dojo_index` | `dojo_findings` |
 | Код | `repos/sync.py` (git по токену) | `kb.code_index` + граф в `code-graph` | `code_search` + граф |
+| Релиз CB18.5 | `./update-cb.sh` (вручную) | `code_cb` + граф в `cb-graph` | `cb_search` + `cb_*` |
 
 Расписание (systemd-таймеры `install-timers.sh`, либо cron `install-cron.sh`):
 Confluence :00, Dojo :15, Jira :30 раз в два часа, чтобы не делить эмбеддер;
@@ -60,6 +62,7 @@ docker-compose.yml, Dockerfile   стек; образ kb общий для kb и
 .env.example                     ВСЕ настройки, с объяснениями
 deploy.sh / healthcheck.sh       развёртывание с нуля / проверка с живым поиском
 update-code.sh                   граф + векторы кода одной командой
+update-cb.sh                     релиз CB18.5 отдельно: клоны, граф, поиск (guides/PLAN-CB.md)
 install-timers.sh, install-cron.sh   расписание обновлений
 selftest.py                      проверка модели, Qdrant и всех MCP по HTTP
 ollama_proxy.py                  localhost-прокси, подставляет ключ шлюза сторонним тулам
@@ -90,7 +93,8 @@ confluence/  sync.py, конвертер storage->md, заглушка серв�
 jira/        sync.py, cron.sh, README
 dojo/        cron.sh
 repos/       sync.py (клон Bitbucket/GitFlic по токену), list.example.txt, тесты
-code/        образ code-graph: Graphify + jenkins_graph.py (шаги Jenkins в графе)
+code/        образ code-graph и cb-graph: Graphify + jenkins_graph.py (шаги Jenkins в графе),
+             mcp_prefix.py (префикс cb_ к инструментам графа релиза)
 tools/       dojo_release_notes.py — release notes одним файлом, только stdlib, для
              запуска у пользователя без сервера и модели (тест сверяет с kb/release_notes)
 testdocs/, corpus/   стенд замеров качества поиска (не прод)
@@ -147,7 +151,8 @@ win_old/     бывший Windows-стенд сервера, не поддерж
 по всем продуктам), код и граф, расширение запроса.
 
 Написано, но на живом стенде **не проверялось**: Jira, `repos/sync.py` на
-живых серверах, ветки DefectDojo (`dojo_compare.py`, живой API).
+живых серверах, ветки DefectDojo (`dojo_compare.py`, живой API), релиз CB18.5
+(`cb_search`, `cb-graph` за прослойкой — тест, `guides/PLAN-CB.md`).
 
 **Не сделано:** аутентификации на портах нет (граница доступа — только порт и
 брандмауэр), `acl_groups` — заглушка `["all"]`, аудита нет, эталонный набор —

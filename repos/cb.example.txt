@@ -1,0 +1,10 @@
+# Репозитории релиза CB18.5 для ./update-cb.sh — по адресу на строку.
+#
+# Скопировать в repos/cb.txt:  cp repos/cb.example.txt repos/cb.txt
+#
+# Формат тот же, что у repos/list.txt: адрес из «Клонировать -> HTTPS» без
+# логина и токена (они в .env), ветка — после @.
+# Сюда только релиз: обычный код — в repos/list.txt.
+
+https://bitbucket.company.local/scm/CB/core.git@release/18.5
+https://gitflic.company.local/project/cb/service-a.git@release/18.5

@@ -15,6 +15,7 @@ from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
 from kb import code_retriever, config, jira_retriever
+from kb.code_index import CB_COLLECTION, CODE_COLLECTION
 from kb.embedder import EmbedError
 from kb.jira_retriever import JiraSearchError
 from kb.retriever import SearchError, known_values, qdrant_alive, search
@@ -33,7 +34,8 @@ mcp = MCPServer(
     "knowledge-base",
     instructions=(
         "Поиск по внутренним данным компании на русском языке: документация "
-        "(kb_search), исходный код (code_search) и задачи Jira (jira_search). "
+        "(kb_search), исходный код (code_search), код релиза CB18.5 "
+        "(cb_search) и задачи Jira (jira_search). "
         "Инструменты вызываются только по явной просьбе, у каждого своё "
         "условие — оно описано в самом инструменте."
     ),
@@ -211,6 +213,9 @@ def code_search(
     НЕ вызывай для вопросов про регламенты и процессы — для них есть
     kb_search. И не вызывай для общих вопросов о языке или библиотеках.
 
+    Код релиза CB18.5 здесь НЕ лежит: «в релизе», «CB», «18.5» — это
+    cb_search.
+
     Если нужно узнать, КТО ВЫЗЫВАЕТ найденную функцию и что сломается при
     изменении — после этого инструмента используй инструменты графа кода
     (get_neighbors, query_graph).
@@ -228,16 +233,76 @@ def code_search(
         В ответе ОБЯЗАТЕЛЬНО указывай location: без него человек не найдёт
         место в коде.
     """
-    if not code_retriever.available():
+    return _search_code(
+        query, top_k, repo_filter, response_format,
+        collection=CODE_COLLECTION,
+        build_hint="python -m kb.code_index <каталог с репозиториями>",
+    )
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+)
+def cb_search(
+    query: str,
+    top_k: int = 8,
+    repo_filter: str | None = None,
+    response_format: str = "concise",
+) -> dict:
+    """ПОИСК ПО КОДУ РЕЛИЗА CB18.5: где что реализовано в релизе.
+
+    Код релиза лежит ОТДЕЛЬНО от остального кода. Вызывай этот инструмент,
+    только если в сообщении есть слово «релиз» («в релизе», «по релизу»),
+    «CB» или «18.5»: «посмотри в релизе, где проверяется лицензия». Без
+    этих слов про код — code_search, а не этот.
+
+    Спрашивают и про релиз, и про «наш» код сразу («сравни, как сделано у нас
+    и в релизе») — вызови оба: cb_search и code_search.
+
+    Ищет ПО СМЫСЛУ, а не по имени: описывай задачу словами, как объяснил бы
+    коллеге, а не пытайся угадать имя функции.
+
+    Кто вызывает найденную функцию и что сломается при изменении — после
+    этого инструмента инструменты графа релиза (cb_get_neighbors,
+    cb_query_graph), а не общего графа.
+
+    Args:
+        query: описание того, что ищешь, обычными словами
+        top_k: сколько фрагментов вернуть, 1-25. По умолчанию 8
+        repo_filter: ограничить одним репозиторием релиза. Без него — по всем
+        response_format: "concise" (по умолчанию) — первые два фрагмента
+            целиком, остальные — начало; "detailed" — все целиком
+
+    Returns:
+        found и results: для каждого найденного — location вида
+        репозиторий/файл:42, символ, сигнатура и код.
+        В ответе ОБЯЗАТЕЛЬНО указывай location и что это код релиза.
+    """
+    return _search_code(
+        query, top_k, repo_filter, response_format,
+        collection=CB_COLLECTION,
+        build_hint="./update-cb.sh на сервере",
+    )
+
+
+def _search_code(
+    query: str,
+    top_k: int,
+    repo_filter: str | None,
+    response_format: str,
+    collection: str,
+    build_hint: str,
+) -> dict:
+    """Общее тело code_search и cb_search: различаются только коллекцией."""
+    if not code_retriever.available(collection):
         return {
             "error": (
-                "Индекс кода не создан. Он строится командой "
-                "python -m kb.code_index <каталог с репозиториями>"
+                f"Индекс {collection} не создан. Он строится командой {build_hint}"
             )
         }
 
     if repo_filter:
-        known = code_retriever.repos()
+        known = code_retriever.repos(collection)
         if known and repo_filter not in known:
             return {
                 "error": (
@@ -247,7 +312,9 @@ def code_search(
             }
 
     try:
-        hits = code_retriever.search(query, top_k=top_k, repo=repo_filter)
+        hits = code_retriever.search(
+            query, top_k=top_k, repo=repo_filter, collection=collection
+        )
     except Exception as e:
         return {"error": f"Поиск по коду не удался: {e}"}
 

@@ -20,6 +20,7 @@ confluence/.sync_state.json
 jira/issues/
 # Список репозиториев у каждого сервера свой; в git — только образец
 repos/list.txt
+repos/cb.txt
 graphify-out/
 
 # Служебное

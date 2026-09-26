@@ -26,25 +26,27 @@ git log --oneline -1
 коде, даже после `git pull`.
 
 ```bash
-docker compose up -d --build --force-recreate kb dojo
+docker compose up -d --build --force-recreate kb dojo cb-graph
 ```
 
 ```bash
-docker compose ps kb dojo
+docker compose ps kb dojo cb-graph
 ```
 
-Оба `Up`, в `CREATED` — только что.
+Все три `Up`, в `CREATED` — только что.
 
 ### 3. Серверы отвечают и отдают инструменты
 
 ```bash
-for p in 8010 8011 8012; do echo "== $p"; curl -s -X POST "http://localhost:$p/mcp" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | python3 -c 'import sys,json; print(", ".join(t["name"] for t in json.load(sys.stdin)["result"]["tools"]))'; done
+for p in 8010 8011 8012 8013; do echo "== $p"; curl -s -X POST "http://localhost:$p/mcp" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | python3 -c 'import sys,json; print(", ".join(t["name"] for t in json.load(sys.stdin)["result"]["tools"]))'; done
 ```
 
 Должно быть:
-- `8010`: `kb_search, code_search, jira_search`
+- `8010`: `kb_search, code_search, cb_search, jira_search`
 - `8011`: `query_graph, get_node, get_neighbors, ...`
 - `8012`: `dojo_findings, dojo_engagements, dojo_compare, dojo_release_notes`
+- `8013`: `cb_query_graph, cb_get_node, cb_get_neighbors, ...` — с префиксом `cb_`.
+  Пусто или ошибка «граф недоступен» — релиз ещё не скачан, см. 6б
 
 ### 4. У dojo_findings продукт необязателен
 
@@ -113,6 +115,28 @@ docker compose exec kb python -m kb.jira_index /docs/jira --full
 docker compose exec kb python -c "from kb import jira_retriever as j; print(j.values('epic_name', limit=20))"
 ```
 
+### 6б. Код релиза CB18.5 (граф и поиск отдельно от обычного кода)
+
+Список репозиториев релиза — `repos/cb.txt` (образец `repos/cb.example.txt`), в `.env` — `CB_DIR`.
+
+```bash
+./update-cb.sh --check
+```
+
+Доступ и ветки есть у всех репозиториев. Дальше — всё целиком (долго: релиз большой):
+
+```bash
+./update-cb.sh
+```
+
+В конце — `Готово`, перед ним `Записано: N` и строки `--- <репо>: ... чанков`.
+
+```bash
+curl -s localhost:6333/collections/code_cb | grep -o '"points_count":[0-9]*'
+```
+
+Не ноль. Обычная коллекция `code` при этом не изменилась.
+
 ### 7. Автотесты
 
 ```bash
@@ -121,6 +145,14 @@ docker compose exec kb python -m kb.test_dojo_retriever
 
 ```bash
 docker compose exec kb python -m kb.test_code_chunks
+```
+
+```bash
+docker compose exec kb python -m kb.test_code_search
+```
+
+```bash
+docker compose exec cb-graph python /app/test_mcp_prefix.py
 ```
 
 ```bash
@@ -269,6 +301,9 @@ pgrep -l code
 | `напиши функцию на Go, которая разворачивает строку` | ответ кодом, без инструментов |
 | `поищи в базе, какие требования к паролям` | вызов `kb_search`, ответ со ссылкой на документ |
 | `посмотри в коде, где проверяется токен авторизации` | вызов `code_search`, файл и строка |
+| `посмотри в релизе, где проверяется токен авторизации` | вызов `cb_search` (не `code_search`), файлы релиза |
+| `кто в релизе вызывает <функция из ответа выше>` | вызов `cb_get_neighbors`, не `get_neighbors` |
+| `сравни, как проверяется токен у нас и в релизе` | оба: `code_search` и `cb_search` |
 | `dojo общая картина` | вызов `dojo_findings` **без** `product`, таблица по продуктам |
 | `dojo критичные в <продукт>` | вызов с `product`, находки этого продукта |
 

@@ -241,7 +241,7 @@ try {
 
 Step "Связь с MCP-серверами"
 # string keys: an int index on [ordered] means position, not key
-$servers = [ordered]@{ "8010" = "kb_search"; "8011" = "get_neighbors" }
+$servers = [ordered]@{ "8010" = "kb_search"; "8011" = "get_neighbors"; "8013" = "cb_get_neighbors" }
 if (-not $NoDojo) { $servers["8012"] = "dojo_findings" }
 $body = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 $mh = @{ Accept = "application/json, text/event-stream" }
@@ -254,6 +254,7 @@ foreach ($p in $servers.Keys) {
     } catch {
         $msg = "${p}: не отвечает — $($_.Exception.Message)"
         if ($p -eq 8012) { Warn "$msg (доступ к DefectDojo открыт не всем; не нужен — запустите с -NoDojo)" }
+        elseif ($p -eq 8013) { Warn "$msg (граф релиза CB18.5: на сервере не поднят cb-graph, ./update-cb.sh)" }
         else { Bad $msg }
     }
 }
@@ -267,6 +268,6 @@ if ($script:Fails -eq 0) {
 }
 Write-Host "  1. Закрыть VS Code полностью и открыть снова"
 Write-Host "  2. Панель Continue -> ассистент Local Assistant -> режим Agent"
-Write-Host "  3. Значок инструментов в строке ввода -> knowledge-base, code-graph, defectdojo -> Automatic"
+Write-Host "  3. Значок инструментов в строке ввода -> knowledge-base, code-graph, cb-graph, defectdojo -> Automatic"
 Write-Host "  4. Проверочные вопросы из раздела 4"
 exit $script:Fails

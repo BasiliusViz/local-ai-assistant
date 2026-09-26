@@ -45,6 +45,8 @@ services:
     volumes:
       # Репозитории только на чтение: клонирует их code-graph, а индексирует kb
       - ${CODE_DIR:-./data/code}:/data:ro
+      # Код релиза CB18.5 — отдельно от остального, индекс code_cb (cb_search)
+      - ${CB_DIR:-./data/cb}:/cb:ro
       # Документы: на чтение для индексации и на запись для выгрузки
       # Confluence — она пишет страницы прямо сюда, в /docs/confluence
       - ${DOCS_DIR:-./data/docs}:/docs
@@ -159,7 +161,7 @@ services:
   # Отдельный сервер намеренно: код и документация — разные источники,
   # и код можно выключить, не трогая поиск по документации.
   code-graph:
-    build:
+    build: &code-graph-build
       context: ./code
       # Здесь кроме PyPI ещё и apt — но только если INSTALL_GIT=yes.
       # По умолчанию git не ставится и apt не задействован вовсе
@@ -181,6 +183,24 @@ services:
       # Список репозиториев через запятую, задаётся в .env.
       # Приватные — с токеном в URL
       - CODE_REPOS=${CODE_REPOS:-}
+
+  # Граф релиза CB18.5: тот же образ, свой каталог (CB_DIR) и свой порт.
+  # Инструменты отдаются с префиксом cb_ (code/mcp_prefix.py): у двух серверов
+  # Graphify имена совпали бы, и Continue их путает. Релиз статичный —
+  # обновляется только вручную, ./update-cb.sh. См. guides/PLAN-CB.md
+  cb-graph:
+    build: *code-graph-build
+    container_name: cb-graph
+    restart: unless-stopped
+    ports:
+      - "${CB_GRAPH_PORT:-8013}:8013"
+    volumes:
+      - ${CB_DIR:-./data/cb}:/data
+    environment:
+      # Клонирует repos/sync.py на хосте (update-cb.sh), не контейнер
+      - CODE_REPOS=
+      - MCP_PORT=8013
+    command: ["/app/cb-entry.sh"]
 
   # Реранкер второй ступени. По умолчанию НЕ поднимается: на наших замерах
   # прибавил один вопрос из пятнадцати, но стоил 48 секунд на запрос (CPU).

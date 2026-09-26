@@ -39,6 +39,10 @@ from kb.embedder import embed_batch
 log = logging.getLogger(__name__)
 
 CODE_COLLECTION = "code"
+# Код релиза CB18.5 — отдельно, со своим инструментом cb_search: он в разы
+# больше остального кода и забивал бы выдачу code_search. Индексируется
+# вручную (update-cb.sh), см. guides/PLAN-CB.md
+CB_COLLECTION = "code_cb"
 
 # Языки программирования режутся на функции в kb/code_chunks.py (tree-sitter),
 # Python — здесь, через ast. Остальное, по чему искать нужно, но разбирать
@@ -347,6 +351,11 @@ def main() -> int:
     ap.add_argument("root", help="каталог с репозиториями")
     ap.add_argument("--recreate", action="store_true", help="пересоздать коллекцию")
     ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument(
+        # Только коды: опечатка вроде knowledge с --recreate снесла бы документы
+        "--collection", default=CODE_COLLECTION, choices=[CODE_COLLECTION, CB_COLLECTION],
+        help=f"коллекция Qdrant: {CODE_COLLECTION} (по умолчанию) или {CB_COLLECTION} для релиза",
+    )
     args = ap.parse_args()
 
     root = Path(args.root)
@@ -363,13 +372,13 @@ def main() -> int:
 
     client = QdrantClient(url=config.QDRANT_URL, timeout=120)
 
-    exists = client.collection_exists(CODE_COLLECTION)
+    exists = client.collection_exists(args.collection)
     if args.recreate and exists:
-        client.delete_collection(CODE_COLLECTION)
+        client.delete_collection(args.collection)
         exists = False
     if not exists:
         client.create_collection(
-            collection_name=CODE_COLLECTION,
+            collection_name=args.collection,
             vectors_config={
                 config.DENSE_VECTOR: models.VectorParams(
                     size=config.EMBED_DIM, distance=models.Distance.COSINE
@@ -378,11 +387,11 @@ def main() -> int:
         )
         for field in ("repo", "path", "symbol", "kind"):
             client.create_payload_index(
-                collection_name=CODE_COLLECTION,
+                collection_name=args.collection,
                 field_name=field,
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
-        print(f"Коллекция {CODE_COLLECTION} создана")
+        print(f"Коллекция {args.collection} создана")
 
     chunks = collect(root)
     print(f"Найдено чанков: {len(chunks)}")
@@ -395,7 +404,7 @@ def main() -> int:
         vectors = embed_batch([embed_text(c) for c in batch])
 
         client.upsert(
-            collection_name=CODE_COLLECTION,
+            collection_name=args.collection,
             points=[
                 models.PointStruct(
                     id=point_id(c),
@@ -409,7 +418,7 @@ def main() -> int:
         written += len(batch)
         print(f"  {written}/{len(chunks)}", end="\r")
 
-    info = client.get_collection(CODE_COLLECTION)
+    info = client.get_collection(args.collection)
     print(f"\nЗаписано: {written}, всего в коллекции: {info.points_count}")
     return 0
 

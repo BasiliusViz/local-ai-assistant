@@ -16,6 +16,7 @@ OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 QDRANT_PORT="${QDRANT_PORT:-6333}"
 KB_PORT="${KB_PORT:-8010}"
 CODE_GRAPH_PORT="${CODE_GRAPH_PORT:-8011}"
+CB_GRAPH_PORT="${CB_GRAPH_PORT:-8013}"
 GEN_MODEL="${GEN_MODEL:-qwen3:8b}"
 EMBED_MODEL="${EMBED_MODEL:-bge-m3}"
 
@@ -35,7 +36,7 @@ OLLAMA_BASE="${OLLAMA_BASE%/}"
 OLLAMA_PROBE="${OLLAMA_BASE/host.docker.internal/localhost}"
 
 echo "=== Контейнеры ==="
-for name in qdrant kb code-graph; do
+for name in qdrant kb code-graph cb-graph; do
     state=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null)
     case "$state" in
         running) ok "$name работает" ;;
@@ -75,7 +76,7 @@ done
 
 echo
 echo "=== Данные ==="
-for coll in knowledge code; do
+for coll in knowledge code code_cb; do
     count=$(curl -s "http://localhost:${QDRANT_PORT}/collections/${coll}" \
         | grep -o '"points_count":[0-9]*' | head -1 | cut -d: -f2)
     if [ -n "${count:-}" ] && [ "$count" -gt 0 ]; then
@@ -91,6 +92,16 @@ graph_nodes=$(curl -s -X POST "http://localhost:${CODE_GRAPH_PORT}/mcp" \
     -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' 2>/dev/null | head -c 200)
 [ -n "$graph_nodes" ] && ok "граф кода :${CODE_GRAPH_PORT} отвечает" || warn "граф кода :${CODE_GRAPH_PORT} не отвечает (нормально, если CODE_REPOS пуста)"
+
+# Граф релиза за прослойкой mcp_prefix: инструменты должны прийти как cb_*
+cb_tools=$(curl -s -X POST "http://localhost:${CB_GRAPH_PORT}/mcp" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' 2>/dev/null)
+if echo "$cb_tools" | grep -q cb_get_neighbors; then
+    ok "граф релиза CB18.5 :${CB_GRAPH_PORT} отвечает"
+else
+    warn "граф релиза CB18.5 :${CB_GRAPH_PORT} не отвечает — ./update-cb.sh"
+fi
 
 echo
 echo "=== Живой поиск ==="

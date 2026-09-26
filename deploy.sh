@@ -49,7 +49,7 @@ OLLAMA_BASE="${OLLAMA_BASE%/}"
 OLLAMA_PROBE="${OLLAMA_BASE/host.docker.internal/localhost}"
 ok "модель: $OLLAMA_BASE"
 
-for dir in "${QDRANT_DIR}" "${CODE_DIR}" "${DOCS_DIR}"; do
+for dir in "${QDRANT_DIR}" "${CODE_DIR}" "${CB_DIR:-./data/cb}" "${DOCS_DIR}"; do
     mkdir -p "$dir" 2>/dev/null || fail "не удалось создать каталог $dir"
 done
 ok "каталоги данных готовы"

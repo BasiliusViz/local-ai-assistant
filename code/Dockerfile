@@ -81,17 +81,21 @@ RUN if [ "$INSTALL_GIT" = "yes" ]; then \
     fi
 
 # [mcp] обязателен: без него HTTP-транспорт не поднимется (нужны
-# mcp + starlette + uvicorn), а stdio нам не подходит - сервер в контейнере
+# mcp + starlette + uvicorn), а stdio нам не подходит - сервер в контейнере.
+# Версия закреплена: в свежих Graphify нет --transport http, на котором
+# работают code-graph и cb-graph. Поднимать версию - только проверив CMD
 RUN pip install --no-cache-dir \
     ${PIP_INDEX_URL:+--index-url "$PIP_INDEX_URL"} \
     ${PIP_TRUSTED_HOST:+--trusted-host "$PIP_TRUSTED_HOST"} \
-    "graphifyy[mcp]"
+    "graphifyy[mcp]==0.9.48"
 
 WORKDIR /app
 COPY sync.sh /app/sync.sh
 # Связи Jenkins, которых Graphify не видит: см. шапку jenkins_graph.py
 COPY jenkins_graph.py test_jenkins_graph.py /app/
-RUN chmod +x /app/sync.sh
+# Граф релиза CB18.5 (контейнер cb-graph): прослойка с префиксом cb_ и её запуск
+COPY mcp_prefix.py test_mcp_prefix.py cb-entry.sh /app/
+RUN chmod +x /app/sync.sh /app/cb-entry.sh
 
 # Репозитории и граф лежат в примонтированном томе, а не в образе:
 # пересборка образа не должна означать повторное клонирование

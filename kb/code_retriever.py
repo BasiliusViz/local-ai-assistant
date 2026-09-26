@@ -104,24 +104,29 @@ def shape(hits: list[CodeHit], detailed: bool) -> list[dict]:
     return out
 
 
-def available() -> bool:
+def available(collection: str = CODE_COLLECTION) -> bool:
     try:
-        return client().collection_exists(CODE_COLLECTION)
+        return client().collection_exists(collection)
     except Exception:
         return False
 
 
-def repos() -> list[str]:
+def repos(collection: str = CODE_COLLECTION) -> list[str]:
     """Какие репозитории проиндексированы - для внятных ошибок фильтра."""
     try:
-        res = client().facet(collection_name=CODE_COLLECTION, key="repo", limit=50)
+        res = client().facet(collection_name=collection, key="repo", limit=50)
         return sorted(str(h.value) for h in res.hits)
     except Exception as e:
         log.debug("facet по repo не сработал: %s", e)
         return []
 
 
-def search(query: str, top_k: int = 5, repo: str | None = None) -> list[CodeHit]:
+def search(
+    query: str,
+    top_k: int = 5,
+    repo: str | None = None,
+    collection: str = CODE_COLLECTION,
+) -> list[CodeHit]:
     if not query.strip():
         return []
 
@@ -132,7 +137,7 @@ def search(query: str, top_k: int = 5, repo: str | None = None) -> list[CodeHit]
         )
 
     points = client().query_points(
-        collection_name=CODE_COLLECTION,
+        collection_name=collection,
         query=embed(query),
         using=config.DENSE_VECTOR,
         query_filter=flt,
