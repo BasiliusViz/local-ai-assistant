@@ -81,6 +81,7 @@ kb/          MCP-серверы и индексаторы (Python)
   retriever.py         поиск по документам; expander.py — переформулировка запроса
   doc_index.py         документы/Confluence;  jira_index.py; dojo_index.py; code_index.py
   code_chunks.py       нарезка кода tree-sitter (все языки), Python через ast
+  code_survey.py       обзор перед индексацией: что возьмётся, что отброшено и почему
   *_retriever.py       поиск по своему источнику
   dojo.py, report.py   клиент DefectDojo; HTML-отчёт по уязвимостям
   dojo_compare.py      ветки (engagement): список, одна, сравнение двух — живым API
