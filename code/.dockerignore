@@ -1,0 +1,12 @@
+# Белый список: в сборку образа code-graph/cb-graph идут только эти файлы.
+# Если CODE_DIR указывает на этот каталог (<проект>/code), рядом лежат клоны
+# всего обычного кода — без белого списка docker пересылал бы их при каждой
+# сборке. Новый файл образа — дописать сюда, иначе COPY его не найдёт
+*
+!Dockerfile
+!sync.sh
+!jenkins_graph.py
+!test_jenkins_graph.py
+!mcp_prefix.py
+!test_mcp_prefix.py
+!cb-entry.sh

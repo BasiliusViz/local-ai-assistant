@@ -27,3 +27,5 @@ graphify-out/
 .DS_Store
 Thumbs.db
 *.log
+cb/
+cb-excluded/
