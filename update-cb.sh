@@ -4,6 +4,8 @@
 #     ./update-cb.sh            всё целиком
 #     ./update-cb.sh --check    только проверить доступ к репозиториям
 #     ./update-cb.sh --dry-run  только показать, что скачается
+#     ./update-cb.sh --download только скачать (блоками), граф и индекс не трогать
+#     ./update-cb.sh --download --only core   один репозиторий по части имени
 #
 # Релиз статичный: по расписанию не обновляется, только этой командой.
 # Список репозиториев — repos/cb.txt (пример: repos/cb.example.txt),
@@ -47,6 +49,17 @@ sync() {
 for arg in "$@"; do
     case "$arg" in
         --check|--dry-run) sync "$@"; exit $? ;;
+        --download)
+            # Только скачать, без графа и индекса: удобно качать блоками
+            # (закомментировать часть repos/cb.txt), граф и индекс — один раз в конце
+            args=()
+            for a in "$@"; do [ "$a" = --download ] || args+=("$a"); done
+            sync ${args[@]+"${args[@]}"}
+            rc=$?
+            echo
+            echo "Место: $(du -sh "$CB_DIR" | cut -f1) в $CB_DIR, свободно $(df -h "$CB_DIR" | awk 'NR==2 {print $4}')"
+            exit "$rc"
+            ;;
     esac
 done
 
