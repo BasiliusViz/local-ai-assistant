@@ -155,6 +155,15 @@ class Languages(unittest.TestCase):
         self.assertIn("Start поднимает сервер", start["doc"])
         self.assertTrue(start["signature"].startswith("func (s *Server) Start"))
 
+    def test_deep_nesting_does_not_crash(self):
+        # Сгенерированный код с вложенностью в тысячи уровней: рекурсивный
+        # обход падал с RecursionError и ронял индексацию всего кода
+        deep = "const data = " + "[" * 3000 + "1" + "]" * 3000 + ";\n"
+        code = deep + "function after() { return 1; }\n"
+        found = code_chunks.chunks(Path("gen.js"), code, LIMIT)
+        self.assertIsNotNone(found)
+        self.assertIn("after", {c["symbol"] for c in found})
+
     def test_interface_methods_without_body_are_not_separate(self):
         code, _ = SAMPLES["Payment.java"]
         symbols = {c["symbol"] for c in code_chunks.chunks(Path("Payment.java"), code, LIMIT)}
@@ -360,6 +369,23 @@ class Collect(unittest.TestCase):
         path = self.root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+
+    def test_unparsable_file_goes_as_text(self):
+        # Сбой разбора одного файла — не повод терять остальные
+        self.put("svc/ok.go", SAMPLES["server.go"][0])
+        self.put("svc/bad.go", "package x\n")
+        real = code_chunks.chunks
+
+        def flaky(path, source, limit):
+            if path.name == "bad.go":
+                raise RecursionError("maximum recursion depth exceeded")
+            return real(path, source, limit)
+
+        with mock.patch.object(code_chunks, "chunks", flaky):
+            items = code_index.collect(self.root)
+        paths = {c["path"] for c in items}
+        self.assertIn("ok.go", paths)
+        self.assertIn("bad.go", paths)
 
     def test_what_is_taken_and_what_is_skipped(self):
         go, _ = SAMPLES["server.go"]

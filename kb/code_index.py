@@ -279,19 +279,27 @@ def collect(root: Path) -> list[dict]:
                     continue
 
                 rel = str(path.relative_to(repo_dir)).replace("\\", "/")
-                if is_py:
-                    found = _python_chunks(path, rel, repo, source)
-                    lang_name = "python"
-                elif lang:
-                    found = code_chunks.chunks(path, source, MAX_CHUNK_CHARS)
-                    lang_name = lang[0]
-                    # Разборщика нет или он не справился — не теряем файл
-                    if found is None:
+                try:
+                    if is_py:
+                        found = _python_chunks(path, rel, repo, source)
+                        lang_name = "python"
+                    elif lang:
+                        found = code_chunks.chunks(path, source, MAX_CHUNK_CHARS)
+                        lang_name = lang[0]
+                        # Разборщика нет или он не справился — не теряем файл
+                        if found is None:
+                            found = _text_chunks(path, source)
+                            lang_name = f"{lang[0]} (текстом)"
+                    else:
                         found = _text_chunks(path, source)
-                        lang_name = f"{lang[0]} (текстом)"
-                else:
+                        lang_name = "текст"
+                # Один странный файл (глубокая вложенность -> RecursionError,
+                # сбой разборщика) не должен ронять индексацию всего кода:
+                # такой файл идёт кусками текста
+                except Exception as e:
+                    log.warning("не разобрался %s/%s (%s), беру текстом", repo, rel, type(e).__name__)
                     found = _text_chunks(path, source)
-                    lang_name = "текст"
+                    lang_name = "не разобрано (текстом)"
                 by_lang[lang_name] = by_lang.get(lang_name, 0) + 1
                 taken += 1
                 for chunk in found:

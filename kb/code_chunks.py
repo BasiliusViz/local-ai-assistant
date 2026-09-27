@@ -421,39 +421,47 @@ def chunks(path: Path, source: str, limit: int) -> list[dict] | None:
 
     out: list[dict] = []
 
-    def walk(node, owner: str) -> None:
-        for child in node.named_children:
-            t = child.type
-            if t in FUNCTIONS:
-                if not _has_body(child):
-                    continue
-                name = _name(child)
-                if not name:
-                    continue
-                recv = _go_receiver(child) if t == "method_declaration" else ""
-                prefix = recv or owner
-                symbol = f"{prefix}.{name}" if prefix else name
-                out.append(_chunk(child, symbol, "method" if prefix else "function", limit))
-            elif t in CONTAINERS:
-                name = _name(child)
-                symbol = f"{owner}.{name}" if owner and name else (name or owner)
-                if name:
-                    out.append(_chunk(child, symbol, "class", CONTAINER_CHARS))
-                walk(child, symbol)
-            elif t == "variable_declarator":
-                value = child.child_by_field_name("value")
-                name = child.child_by_field_name("name")
-                if value is not None and name is not None and value.type in FUNCTION_VALUES:
-                    symbol = f"{owner}.{_text(name)}" if owner else _text(name)
-                    # диапазон — весь оператор (const ... = () => {}), а не
-                    # только правая часть: так видно, как функция объявлена
-                    out.append(_chunk(node, symbol, "function", limit))
-                else:
-                    walk(child, owner)
-            else:
-                walk(child, owner)
+    # Обход без рекурсии: стек итераторов по детям, порядок тот же, что у
+    # рекурсивного. Рекурсия падала с «maximum recursion depth exceeded» на
+    # сгенерированном коде с глубокой вложенностью (длинные цепочки вызовов,
+    # огромные вложенные массивы) — и роняла индексацию всего кода
+    stack = [(iter(tree.root_node.named_children), tree.root_node, "")]
+    while stack:
+        children, node, owner = stack[-1]
+        child = next(children, None)
+        if child is None:
+            stack.pop()
+            continue
 
-    walk(tree.root_node, "")
+        t = child.type
+        if t in FUNCTIONS:
+            if not _has_body(child):
+                continue
+            name = _name(child)
+            if not name:
+                continue
+            recv = _go_receiver(child) if t == "method_declaration" else ""
+            prefix = recv or owner
+            symbol = f"{prefix}.{name}" if prefix else name
+            out.append(_chunk(child, symbol, "method" if prefix else "function", limit))
+        elif t in CONTAINERS:
+            name = _name(child)
+            symbol = f"{owner}.{name}" if owner and name else (name or owner)
+            if name:
+                out.append(_chunk(child, symbol, "class", CONTAINER_CHARS))
+            stack.append((iter(child.named_children), child, symbol))
+        elif t == "variable_declarator":
+            value = child.child_by_field_name("value")
+            name = child.child_by_field_name("name")
+            if value is not None and name is not None and value.type in FUNCTION_VALUES:
+                symbol = f"{owner}.{_text(name)}" if owner else _text(name)
+                # диапазон — весь оператор (const ... = () => {}), а не
+                # только правая часть: так видно, как функция объявлена
+                out.append(_chunk(node, symbol, "function", limit))
+            else:
+                stack.append((iter(child.named_children), child, owner))
+        else:
+            stack.append((iter(child.named_children), child, owner))
     out.extend(_uncovered(path, source, out, limit))
 
     step = jenkins_step(path)
