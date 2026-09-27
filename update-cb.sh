@@ -6,6 +6,7 @@
 #     ./update-cb.sh --dry-run  только показать, что скачается
 #     ./update-cb.sh --download только скачать (блоками), граф и индекс не трогать
 #     ./update-cb.sh --download --only core   один репозиторий по части имени
+#     ./update-cb.sh --orphans  скачанные, но убранные из списка (их надо убрать из CB_DIR)
 #
 # Релиз статичный: по расписанию не обновляется, только этой командой.
 # Список репозиториев — repos/cb.txt (пример: repos/cb.example.txt),
@@ -49,6 +50,29 @@ sync() {
 for arg in "$@"; do
     case "$arg" in
         --check|--dry-run) sync "$@"; exit $? ;;
+        --orphans)
+            # Скачанные, но убранные из списка: sync.py их не удаляет, а
+            # граф и индекс строятся по каталогу, не по списку
+            CODE_DIR="$CB_DIR" CODE_GIT_REPOS="" CODE_GIT_REPOS_FILE="$LIST" python3 - <<'EOF'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, "repos")
+import sync
+sync.load_env()
+root = Path(os.environ["CODE_DIR"])
+wanted = {r.dirname for r in sync.parse_list(sync.repo_list(), sync.load_providers())}
+extra = sorted(p.name for p in root.iterdir()
+               if p.is_dir() and not p.name.startswith(".") and p.name != "graph"
+               and p.name not in wanted)
+print(f"В {root}, но не в списке ({len(extra)}):")
+for name in extra:
+    print(f"  {name}")
+if extra:
+    print("Попадут в граф и индекс, пока лежат там. Убрать, сохранив:")
+    print(f"  mkdir -p {root}-excluded && mv " + " ".join(str(root / n) for n in extra) + f" {root}-excluded/")
+EOF
+            exit $?
+            ;;
         --download)
             # Только скачать, без графа и индекса: удобно качать блоками
             # (закомментировать часть repos/cb.txt), граф и индекс — один раз в конце

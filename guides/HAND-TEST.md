@@ -146,6 +146,21 @@ docker compose exec kb python -c "from kb import jira_retriever as j; print(j.va
 docker compose exec -T kb python -m kb.code_survey /cb > ~/cb-survey.txt; less ~/cb-survey.txt
 ```
 
+Убрали репозитории из `repos/cb.txt` (например, скачанные сторонние библиотеки) — их
+папки остаются в `CB_DIR` и попадут в граф и индекс. Показать такие и команду, чтобы
+убрать их в сторону (не удаляя):
+
+```bash
+./update-cb.sh --orphans
+```
+
+**6б.3б. Скорость эмбеддера** — сколько чанков в секунду, и во сколько это выльется
+(подставить число чанков из 6б.3). Не запускать одновременно с индексацией:
+
+```bash
+docker compose exec -T kb python -m kb.embed_speed --chunks 950000
+```
+
 **6б.3. Сколько будет индексироваться** — нарезка без эмбеддингов, быстро, ничего не пишет:
 
 ```bash
