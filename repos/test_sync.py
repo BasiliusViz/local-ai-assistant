@@ -216,6 +216,23 @@ class Parsing(unittest.TestCase):
         names = [r.dirname for r in sync.parse_list(raw, self.ps)]
         self.assertEqual(names, ["access-server", "bitbucket-PAY-backend", "gitflic-team-backend"])
 
+    def test_two_branches_of_one_repo_get_own_dirs(self):
+        raw = ("https://bitbucket.company.local/scm/P/core.git@release/18.5 "
+               "https://bitbucket.company.local/scm/P/core.git@develop "
+               "https://bitbucket.company.local/scm/P/core.git@develop "
+               "https://bitbucket.company.local/scm/P/other.git")
+        repos = sync.parse_list(raw, self.ps)
+        self.assertEqual(
+            [(r.dirname, r.branch) for r in repos],
+            [("core--release_18.5", "release/18.5"), ("core--develop", "develop"), ("other", "")],
+        )
+
+    def test_branch_and_default_of_one_repo(self):
+        raw = ("https://bitbucket.company.local/scm/P/core.git "
+               "https://bitbucket.company.local/scm/P/core.git@develop")
+        names = [r.dirname for r in sync.parse_list(raw, self.ps)]
+        self.assertEqual(names, ["core--default", "core--develop"])
+
     def test_same_dir_from_two_urls_is_error(self):
         raw = ("https://bitbucket.company.local/scm/P/a.git "
                "https://bitbucket.company.local/scm/P/a")

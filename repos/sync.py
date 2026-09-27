@@ -278,9 +278,28 @@ def dir_name(url: str, provider: Provider | None) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", name)
 
 
+def branch_suffix(branch: str) -> str:
+    """Приписка ветки к каталогу: release/18.5 -> --release_18.5."""
+    return "--" + re.sub(r"[^A-Za-z0-9._-]", "_", branch or "default")
+
+
 def parse_list(raw: str, providers: list[Provider]) -> list[Repo]:
     entries = [e for e in re.split(r"[\s,]+", raw) if e]
     repos = [parse_repo(e, providers) for e in entries]
+
+    # Один репозиторий с несколькими ветками — отдельный клон на ветку, ветка
+    # в имени каталога (core--release_18.5). Без этого вторая строка молча
+    # терялась: обе ветки давали один каталог и склеивались как повтор
+    branches: dict[str, set[str]] = {}
+    for r in repos:
+        branches.setdefault(r.url, set()).add(r.branch)
+    suffix = {
+        id(r): branch_suffix(r.branch) if len(branches[r.url]) > 1 else ""
+        for r in repos
+    }
+    for r in repos:
+        r.dirname += suffix[id(r)]
+
     seen: dict[str, str] = {}
     for r in repos:
         if r.dirname in seen and seen[r.dirname] != r.url:
@@ -297,13 +316,16 @@ def parse_list(raw: str, providers: list[Provider]) -> list[Repo]:
     # Короткое имя там, где оно однозначно; у совпавших — длинное у всех
     # участников, а не «первому короткое»: иначе имя каталога зависело бы от
     # порядка строк в списке
+    def short(r: Repo) -> str:
+        return short_name(r.url) + suffix[id(r)]
+
     shorts: dict[str, int] = {}
     for r in result:
-        shorts[short_name(r.url)] = shorts.get(short_name(r.url), 0) + 1
+        shorts[short(r)] = shorts.get(short(r), 0) + 1
     for r in result:
         r.long_name = r.dirname
-        if shorts[short_name(r.url)] == 1:
-            r.dirname = short_name(r.url)
+        if shorts[short(r)] == 1:
+            r.dirname = short(r)
     return result
 
 
