@@ -80,8 +80,9 @@ class ProxyTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.proxy.shutdown()
-        cls.upstream.shutdown()
+        for srv in (cls.proxy, cls.upstream):
+            srv.shutdown()
+            srv.server_close()
 
     def setUp(self):
         FakeGraphify.received = []
@@ -137,8 +138,10 @@ class ProxyTest(unittest.TestCase):
                 self.call("tools/list", url=f"http://127.0.0.1:{dead.server_port}/mcp")
             self.assertEqual(ctx.exception.code, 502)
             self.assertIn("update-cb.sh", ctx.exception.read().decode())
+            ctx.exception.close()
         finally:
             dead.shutdown()
+            dead.server_close()
 
 
 if __name__ == "__main__":
