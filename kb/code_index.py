@@ -28,13 +28,14 @@ import hashlib
 import logging
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 
 from qdrant_client import QdrantClient, models
 
 from kb import code_chunks, config
-from kb.embedder import embed_batch
+from kb.embedder import EmbedError, embed_batch
 
 log = logging.getLogger(__name__)
 
@@ -344,6 +345,74 @@ def embed_text(chunk: dict) -> str:
     return "\n".join(parts)
 
 
+# Сколько символов уходит в ВЕКТОР (в выдаче код остаётся целиком). Шлюз
+# отдаёт bge-m3 с окном меньше заявленного, и кусок в 4000 символов кода
+# получал 400 «input length exceeds the context length» — прогон релиза
+# падал через час работы. Тот же лимит, что у документов (kb/doc_index.py)
+EMBED_MAX_CHARS = int(os.getenv("KB_EMBED_MAX_CHARS", "3000"))
+# Кусок, который и после урезания не влез, режется вдвое, но не короче
+MIN_EMBED_CHARS = 300
+# Сетевой сбой или перезапуск модели — повтор с паузой 5, 10, 20, 40 с
+EMBED_RETRIES = 5
+
+
+def _too_long(e: Exception) -> bool:
+    text = str(e).lower()
+    return "context length" in text or "input length" in text or "too long" in text
+
+
+def _embed_retrying(texts: list[str], embed=embed_batch, sleep=time.sleep) -> list:
+    """embed с повторами при сбоях. Ошибка длины не повторяется — сразу наверх."""
+    for attempt in range(EMBED_RETRIES):
+        try:
+            return embed(texts)
+        except EmbedError as e:
+            if _too_long(e) or attempt == EMBED_RETRIES - 1:
+                raise
+            wait = min(60, 5 * 2 ** attempt)
+            log.warning("эмбеддер: %s — повтор через %d с", str(e)[:160], wait)
+            sleep(wait)
+    raise AssertionError("недостижимо")
+
+
+def embed_safe(texts: list[str], embed=embed_batch, sleep=time.sleep) -> list:
+    """Векторы для пачки: урезать до EMBED_MAX_CHARS, повторять при сбоях, а
+    если эмбеддер всё равно отказал по длине — по одному, укорачивая вдвое
+    тот, что не влез. Один длинный кусок не роняет многочасовой прогон."""
+    texts = [t[:EMBED_MAX_CHARS] for t in texts]
+    try:
+        return _embed_retrying(texts, embed, sleep)
+    except EmbedError as e:
+        if not _too_long(e):
+            raise
+    out = []
+    for text in texts:
+        while True:
+            try:
+                out.append(_embed_retrying([text], embed, sleep)[0])
+                break
+            except EmbedError as e:
+                if not _too_long(e) or len(text) <= MIN_EMBED_CHARS:
+                    raise
+                text = text[: len(text) // 2]
+                log.warning("кусок не влез в окно эмбеддера — укорочен до %d символов", len(text))
+    return out
+
+
+def existing_ids(client, collection: str) -> set[str]:
+    """Идентификаторы уже записанных кусков — для --resume."""
+    ids: set[str] = set()
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=collection, limit=10000, offset=offset,
+            with_payload=False, with_vectors=False,
+        )
+        ids.update(str(p.id) for p in points)
+        if offset is None:
+            return ids
+
+
 def point_id(chunk: dict) -> str:
     seed = f"{chunk['repo']}|{chunk['path']}|{chunk['symbol']}|{chunk['line_start']}"
     return str(uuid.UUID(hashlib.md5(seed.encode()).hexdigest()))
@@ -358,6 +427,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Индексация кода в Qdrant")
     ap.add_argument("root", help="каталог с репозиториями")
     ap.add_argument("--recreate", action="store_true", help="пересоздать коллекцию")
+    ap.add_argument(
+        "--resume", action="store_true",
+        help="продолжить оборванную индексацию: уже записанные куски пропустить",
+    )
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument(
         # Только коды: опечатка вроде knowledge с --recreate снесла бы документы
@@ -365,6 +438,10 @@ def main() -> int:
         help=f"коллекция Qdrant: {CODE_COLLECTION} (по умолчанию) или {CB_COLLECTION} для релиза",
     )
     args = ap.parse_args()
+
+    if args.recreate and args.resume:
+        print("--recreate и --resume вместе нельзя: продолжать нечего, если коллекцию стереть")
+        return 1
 
     root = Path(args.root)
     if not root.is_dir():
@@ -405,11 +482,17 @@ def main() -> int:
     print(f"Найдено чанков: {len(chunks)}")
     if not chunks:
         return 0
+    if args.resume:
+        # id детерминирован (репозиторий, путь, символ, строка): тот же кусок
+        # даёт тот же id, и записанное в оборванном прогоне узнаётся
+        done = existing_ids(client, args.collection)
+        chunks = [c for c in chunks if point_id(c) not in done]
+        print(f"Уже в коллекции: {len(done)}, осталось записать: {len(chunks)}")
 
     written = 0
     for start in range(0, len(chunks), args.batch):
         batch = chunks[start : start + args.batch]
-        vectors = embed_batch([embed_text(c) for c in batch])
+        vectors = embed_safe([embed_text(c) for c in batch])
 
         client.upsert(
             collection_name=args.collection,
