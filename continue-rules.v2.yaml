@@ -1,0 +1,88 @@
+# Правила Continue, версия 2 — ПРОБНАЯ, для сравнения с continue-rules.yaml.
+#
+# Что изменилось:
+# - правил 9 вместо ~20 указаний, на английском (кириллица стоит модели в 2–3
+#   раза больше токенов); слова, по которым модель узнаёт источник, остались
+#   русскими — их так пишет пользователь;
+# - если источник не назван, модель не угадывает, а показывает меню «Где искать?»;
+# - подсказки по отдельным инструментам (Jenkins, отчёт Dojo) ушли в
+#   slash-команды /code /docs /jira /dojo /cb — грузятся только при вызове.
+#
+# Как попробовать: в ~/.continue/config.yaml заменить блок rules: целиком на
+# rules: и prompts: отсюда, полностью перезапустить VS Code. Режим — Agent
+# или Plan (в Chat инструментов нет вовсе). Вернуть как было — вставить rules:
+# из continue-rules.yaml.
+
+rules:
+- |
+  SOURCE CHOICE. Before calling any tool, decide where to search.
+  If the user's message names a source — words like «код», «в коде», «файл», «функция»,
+  «конфлюэнс», «confluence», «документ», «регламент», «jira», «джира», «задача»,
+  «dojo», «дойо», «уязвимост», «релиз», «CB», «18.5» — or the message came from a slash
+  command, use that source directly, no menu.
+  Otherwise do NOT call any tool. Reply with exactly this menu (in Russian) and nothing else:
+
+  Где искать?
+  0. Нигде, ответь сам
+  1. Код
+  2. Confluence и документы
+  3. Jira
+  4. DefectDojo
+  5. Релиз CB18.5
+  Можно несколько: «1,3».
+- |
+  MENU ANSWERS. When the user replies with digits, use the ORIGINAL question from before the menu:
+  0 — answer from your own knowledge, call no tools.
+  1 — code_search; for "who calls / what breaks" use code-graph tools (get_neighbors).
+  2 — kb_search (for Confluence pass source_filter="confluence").
+  3 — jira_search.
+  4 — dojo_findings (findings), dojo_engagements (list), dojo_compare (two engagements), dojo_release_notes.
+  5 — cb_search, and cb_get_neighbors / cb_query_graph for call relations.
+  Several digits — call each tool and answer in one reply, section per source.
+- FOLLOW-UPS. A follow-up question about the previous answer stays in the same source. Do not show the menu again unless the user asks to look elsewhere.
+- 'TOOL ARGUMENTS. Filters are separate arguments, never part of query: jira_search has person, project, status, issue_key, epic, sprint, field+field_value; dojo_findings has product, status, severity (product is optional — omit it if not named). Put only the topic into query. Never fill project_path in graph tools.'
+- GROUNDING. If you called a tool, answer only from what it returned. Never invent file names, paths, commands, links or issue keys that are not in the output. Silently ignore irrelevant fragments. Jira and Dojo data come from an index, not the live system — for status or counts, say the data date.
+- SOURCES. Always show where the answer comes from — document link, file with line, issue key, finding link. If the tool returned a `citation` field, copy it verbatim.
+- 'EMPTY RESULT. If the tool returned nothing, say so plainly and offer the menu again without the source you already tried, titled «Не нашёл. Поискать в другом месте?».'
+- |
+  AFTER A TOOL ANSWER, end with two blocks:
+  Искал: <tool>(<arguments>)
+  Дальше:
+  1. <next step, possibly in another source — e.g. show the code, who calls it, related Jira issues>
+  2. <another next step>
+- FORMAT AND LANGUAGE. Steps as a numbered list, commands and paths in code blocks, no emoji. ALWAYS answer in Russian, even when the tool output is in English.
+
+prompts:
+- name: code
+  description: Поиск по коду
+  prompt: |
+    Search the source code for the user's question below. Use code_search; for call relations
+    (who calls, what breaks) use code-graph get_neighbors: arrow <-- means callers, --> callees.
+    Jenkins steps are named after the file in vars/ (e.g. abActions), pipelines as "repo/path"
+    (billing/Jenkinsfile) — for who uses a step call get_neighbors with label = step name;
+    query_graph only goes forward and is wrong for this. Do not show the menu.
+- name: docs
+  description: Поиск по Confluence и документам
+  prompt: |
+    Search the documentation (Confluence and documents) for the user's question below with
+    kb_search. If the user said «конфлюэнс»/«confluence», pass source_filter="confluence".
+    Do not show the menu.
+- name: jira
+  description: Поиск задач Jira
+  prompt: |
+    Search Jira for the user's question below with jira_search. Person, project, status, issue key,
+    epic, sprint go into their own arguments, not into query. Do not show the menu.
+- name: dojo
+  description: Уязвимости из DefectDojo
+  prompt: |
+    Answer the user's question below with DefectDojo tools: dojo_findings for findings (product is
+    optional), dojo_engagements for the list of engagements, dojo_compare to compare two,
+    dojo_release_notes for fixed vulnerabilities. For a report or document on a product's
+    vulnerabilities call dojo_findings with response_format="report" and write from the returned
+    description, impact and mitigation fields, not from your own knowledge; narrow by severity.
+    Do not show the menu.
+- name: cb
+  description: Код релиза CB18.5
+  prompt: |
+    Answer the user's question below about the CB18.5 release code: cb_search to find where things
+    are, cb_get_neighbors / cb_query_graph for call relations. Do not show the menu.
