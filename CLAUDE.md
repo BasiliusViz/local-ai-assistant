@@ -61,6 +61,7 @@ Jira `--prune` ночью; код раз в сутки в 2:00 (`repos/cron.sh`)
 docker-compose.yml, Dockerfile   стек; образ kb общий для kb и dojo
 .env.example                     ВСЕ настройки, с объяснениями
 deploy.sh / healthcheck.sh       развёртывание с нуля / проверка с живым поиском
+check-qdrant.sh                  диагностика Qdrant: упал ли, память, коллекции, журнал
 update-code.sh                   граф + векторы кода одной командой
 update-cb.sh                     релиз CB18.5 отдельно: клоны, граф, поиск (guides/PLAN-CB.md)
 install-timers.sh, install-cron.sh   расписание обновлений

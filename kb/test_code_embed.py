@@ -73,6 +73,47 @@ class EmbedSafe(unittest.TestCase):
         self.assertEqual(len(self.slept), code_index.EMBED_RETRIES - 1)
 
 
+class QdrantSide(unittest.TestCase):
+    """Второй обрыв прогона релиза: Qdrant закрывал соединение посреди upsert."""
+
+    def test_upsert_is_retried(self):
+        slept, calls = [], []
+
+        class Client:
+            def upsert(self, **kwargs):
+                calls.append(kwargs["collection_name"])
+                if len(calls) < 3:
+                    raise RuntimeError("Server disconnected without sending a response")
+
+        code_index.upsert_retrying(Client(), slept.append, collection_name="code_cb", points=[])
+        self.assertEqual(calls, ["code_cb"] * 3)
+        self.assertEqual(slept, [10, 20])
+
+    def test_upsert_gives_up(self):
+        class Client:
+            def upsert(self, **kwargs):
+                raise RuntimeError("down")
+
+        slept = []
+        with self.assertRaises(RuntimeError):
+            code_index.upsert_retrying(Client(), slept.append, collection_name="c", points=[])
+        self.assertEqual(len(slept), code_index.UPSERT_RETRIES - 1)
+
+    def test_compact_moves_vectors_to_disk(self):
+        seen = {}
+
+        class Client:
+            def update_collection(self, **kwargs):
+                seen.update(kwargs)
+
+        code_index.compact(Client(), "code_cb")
+        vec = seen["vectors_config"][code_index.config.DENSE_VECTOR]
+        self.assertTrue(vec.on_disk)
+        self.assertTrue(seen["quantization_config"].scalar.always_ram)
+        self.assertIn(code_index.CB_COLLECTION, code_index.COMPACT_COLLECTIONS)
+        self.assertNotIn(code_index.CODE_COLLECTION, code_index.COMPACT_COLLECTIONS)
+
+
 class Resume(unittest.TestCase):
     def test_existing_ids_pages_through_collection(self):
         pages = {

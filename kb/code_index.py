@@ -399,6 +399,43 @@ def embed_safe(texts: list[str], embed=embed_batch, sleep=time.sleep) -> list:
     return out
 
 
+# Релиз — 1.6 млн кусков: векторы в памяти заняли бы ~6.5 ГБ, и Qdrant на
+# прогоне обрывал соединение посреди upsert. Для таких коллекций векторы
+# лежат на диске, а в памяти — сжатая int8-копия (~1 КБ на кусок вместо 4):
+# поиск идёт по ней, точный пересчёт лучших — с диска
+COMPACT_COLLECTIONS = {CB_COLLECTION}
+# Qdrant перезапускается (после нехватки памяти поднимается минуты) —
+# повтор записи с паузой 10, 20, 40, 80 с, а не обрыв многочасового прогона
+UPSERT_RETRIES = 5
+
+
+def compact(client, collection: str) -> None:
+    client.update_collection(
+        collection_name=collection,
+        vectors_config={config.DENSE_VECTOR: models.VectorParamsDiff(on_disk=True)},
+        quantization_config=models.ScalarQuantization(
+            scalar=models.ScalarQuantizationConfig(
+                type=models.ScalarType.INT8, quantile=0.99, always_ram=True,
+            )
+        ),
+    )
+
+
+def upsert_retrying(client, sleep=time.sleep, **kwargs) -> None:
+    for attempt in range(UPSERT_RETRIES):
+        try:
+            client.upsert(**kwargs)
+            return
+        # qdrant_client оборачивает сетевые ошибки по-разному в разных версиях
+        # (ResponseHandlingException, httpx.*): ловим всё и повторяем
+        except Exception as e:
+            if attempt == UPSERT_RETRIES - 1:
+                raise
+            wait = min(120, 10 * 2 ** attempt)
+            log.warning("Qdrant: %s — повтор записи через %d с", str(e)[:160], wait)
+            sleep(wait)
+
+
 def existing_ids(client, collection: str) -> set[str]:
     """Идентификаторы уже записанных кусков — для --resume."""
     ids: set[str] = set()
@@ -477,6 +514,11 @@ def main() -> int:
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
         print(f"Коллекция {args.collection} создана")
+    if args.collection in COMPACT_COLLECTIONS:
+        # И для новой, и для уже заполненной: настройка применяется на ходу,
+        # записанное не теряется, повторный вызов ничего не меняет
+        compact(client, args.collection)
+        print(f"Коллекция {args.collection}: векторы на диске, в памяти сжатая копия")
 
     chunks = collect(root)
     print(f"Найдено чанков: {len(chunks)}")
@@ -494,7 +536,8 @@ def main() -> int:
         batch = chunks[start : start + args.batch]
         vectors = embed_safe([embed_text(c) for c in batch])
 
-        client.upsert(
+        upsert_retrying(
+            client,
             collection_name=args.collection,
             points=[
                 models.PointStruct(
