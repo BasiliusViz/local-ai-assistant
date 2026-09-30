@@ -32,6 +32,9 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import repo_cards  # noqa: E402
+
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 MAX_DEPTH = 6
 MAX_HOPS = 6
@@ -212,6 +215,26 @@ class Graph:
 
     prefix = ""
 
+    # --- карточки репозиториев (repo_cards.py) ---
+
+    def cards(self) -> dict:
+        """cards.json рядом с базой; перечитывается, когда файл заменили."""
+        path = self.db.with_name("cards.json")
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except OSError:
+            raise LookupError(
+                f"Карточек репозиториев нет: нет {path}. На сервере: ./update-cb.sh --cards "
+                "(или docker compose exec -T cb-graph python /app/repo_cards.py build /data "
+                "--db /data/graph/graph.sqlite)")
+        with self._cards_lock:
+            if self._cards is None or self._cards[0] != mtime:
+                self._cards = (mtime, repo_cards.load(path))
+            return self._cards[1]
+
+    _cards: tuple[int, dict] | None = None
+    _cards_lock = threading.Lock()
+
     # --- узлы ---
 
     def node(self, nid: int) -> dict:
@@ -366,6 +389,17 @@ class Tools:
              {"repo": repo}, []),
             ("god_nodes", "Return the most connected nodes - the core abstractions of the code.",
              {"top_n": {"type": "integer", "default": 10}, "repo": repo}, []),
+            ("repos",
+             "START HERE for general questions about the product: what parts it consists of, what a "
+             "service/repository does, what it depends on and who uses it. Returns repository cards: "
+             "purpose from README, kind (service/library/deploy), languages and size, main modules and "
+             "functions, dependencies between repositories. Without query - the list of all repositories. "
+             "With a repository name - its full card. With keywords (e.g. 'alerts', 'secrets') - the "
+             "matching repositories. Then use the other tools with repo=<name> for details.",
+             {"query": {"type": "string", "description":
+                        "Optional: repository name or keywords. Empty - list of all repositories"},
+              "token_budget": {"type": "integer", "default": 4000, "description": "Max output tokens"}},
+             []),
         ]
         tag = f"[{self.label}] Code graph of {self.label} only, not of our regular code. " if self.label else ""
         return [{"name": self.prefix + name, "description": tag + desc,
@@ -382,6 +416,8 @@ class Tools:
             raise UnknownTool(name)
         if not isinstance(args, dict):
             raise ValueError("arguments должны быть объектом")
+        if name == "repos":  # карточки — отдельный файл, база не нужна
+            return fn(args)
         with self.g.snapshot():
             return fn(args)
 
@@ -635,6 +671,14 @@ class Tools:
             n = self.g._row(r)
             lines.append(f"  {i}. {clean(n['label'])} - {n['degree']} edges ({self.g.where(n)})")
         return "\n".join(lines)
+
+    def t_repos(self, a):
+        data = self.g.cards()
+        # README — чужой текст: без управляющих символов, как в остальных ответах
+        text = "\n".join(repo_cards.answer(data, str(a.get("query") or "")[:500]))
+        lines = [_CTRL.sub("", x) for x in text.split("\n")]
+        return cut(lines, a.get("token_budget") or 4000,
+                   "Задайте query — имя репозитория или слова, тогда ответ короче")
 
 
 class Rpc:

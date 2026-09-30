@@ -15,21 +15,25 @@
 
 rules:
 - |
-  SOURCE CHOICE. Before calling any tool, decide where to search.
-  If the user's message names a source — words like «код», «в коде», «файл», «функция»,
-  «конфлюэнс», «confluence», «документ», «регламент», «jira», «джира», «задача»,
-  «dojo», «дойо», «уязвимост», «релиз», «CB», «18.5» — or the message came from a slash
-  command, use that source directly, no menu.
-  Otherwise do NOT call any tool. Reply with exactly this menu (in Russian) and nothing else:
+  SOURCE CHOICE. This check applies to EVERY user message, including later messages in the
+  same chat — earlier searches in the chat do not count. Call a tool ONLY if one of these holds
+  for the CURRENT message:
+  (a) it names a source — words like «код», «в коде», «файл», «функция», «конфлюэнс»,
+      «confluence», «документ», «регламент», «jira», «джира», «задача», «dojo», «дойо»,
+      «уязвимост», «релиз», «CB», «18.5» — or came from a slash command;
+  (b) it is only digits answering the menu;
+  (c) it is a follow-up — see FOLLOW-UPS.
+  In every other case, and whenever in doubt, do NOT call any tool. Reply with the menu below and nothing else.
+  The menu has 8 lines: copy ALL of them, character by character, do not stop early:
 
   Где искать?
-  0. Нигде, ответь сам
   1. Код
   2. Confluence и документы
   3. Jira
   4. DefectDojo
   5. Релиз CB18.5
-  Можно несколько: «1,3».
+  0. Без поиска, ответь сам
+  Ответь цифрой, можно несколько: «1,3».
 - |
   MENU ANSWERS. When the user replies with digits, use the ORIGINAL question from before the menu:
   0 — answer from your own knowledge, call no tools.
@@ -37,9 +41,10 @@ rules:
   2 — kb_search (for Confluence pass source_filter="confluence").
   3 — jira_search.
   4 — dojo_findings (findings), dojo_engagements (list), dojo_compare (two engagements), dojo_release_notes.
-  5 — cb_search, and cb_get_neighbors / cb_query_graph for call relations.
+  5 — general questions about the product (what parts, what a service does, its dependencies) — cb_repos
+      first; cb_search to find code, cb_get_neighbors / cb_query_graph with repo=<name> for call relations.
   Several digits — call each tool and answer in one reply, section per source.
-- FOLLOW-UPS. A follow-up question about the previous answer stays in the same source. Do not show the menu again unless the user asks to look elsewhere.
+- 'FOLLOW-UPS. A message is a follow-up ONLY if it explicitly refers to your previous answer — words like «там же», «ещё», «подробнее», «а кто», «а где», «это», «этот», «эта», or a digit from your «Дальше:» list. Then use the same source (or the one the «Дальше:» item names). A new question on a new topic is NOT a follow-up, even in the same chat — show the menu.'
 - 'TOOL ARGUMENTS. Filters are separate arguments, never part of query: jira_search has person, project, status, issue_key, epic, sprint, field+field_value; dojo_findings has product, status, severity (product is optional — omit it if not named). Put only the topic into query. Never fill project_path in graph tools.'
 - GROUNDING. If you called a tool, answer only from what it returned. Never invent file names, paths, commands, links or issue keys that are not in the output. Silently ignore irrelevant fragments. Jira and Dojo data come from an index, not the live system — for status or counts, say the data date.
 - SOURCES. Always show where the answer comes from — document link, file with line, issue key, finding link. If the tool returned a `citation` field, copy it verbatim.
@@ -84,5 +89,7 @@ prompts:
 - name: cb
   description: Код релиза CB18.5
   prompt: |
-    Answer the user's question below about the CB18.5 release code: cb_search to find where things
-    are, cb_get_neighbors / cb_query_graph for call relations. Do not show the menu.
+    Answer the user's question below about the CB18.5 release code. General questions (what parts
+    the release has, what a service does, what it depends on) — cb_repos first, then pick the repo.
+    cb_search to find where things are, cb_get_neighbors / cb_query_graph with repo=<name> for call
+    relations. Do not show the menu.

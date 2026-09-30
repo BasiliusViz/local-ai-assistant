@@ -14,3 +14,5 @@
 !graph_server.py
 !graph_report.py
 !test_graph_store.py
+!repo_cards.py
+!test_repo_cards.py

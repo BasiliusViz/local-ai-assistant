@@ -76,6 +76,17 @@
 
 ## Сессия 2 — карточки репозиториев и Obsidian
 
+> **Написана 30.09.2026, на сервере не запускалась.** `code/repo_cards.py` (+ `test_repo_cards.py`),
+> инструмент `cb_repos` в `graph_server.py`, шаг в `sync.sh`, `./update-cb.sh --cards`, правила
+> Continue (в том числе `continue-rules.v2.yaml`), `selftest.py`, `check-cb.py` раздел 4.
+> Отличия от плана: карточки — `cards.json` рядом с базой (81 запись, Qdrant не нужен); поиск в
+> `cb_repos` — по словам (имя, заголовок и текст README, модули, функции), без эмбеддингов;
+> фраз от модели нет — на сервере шлюз пускает только `/api/embed`. Если README мало, это
+> следующий шаг (генерация на машине с доступом к модели, результат — в `cards.json`).
+> Проверка на сервере: `docker compose up -d --build cb-graph` → `./update-cb.sh --cards` →
+> `python3 check-cb.py` → Continue: «из каких частей состоит релиз», «что делает alert-manager»,
+> «от чего зависит vault-manager». Obsidian — `<CB_DIR>/graph/obsidian`.
+
 1. Карточка на репозиторий: README (первые абзацы), языки и объём (из `code_survey`),
    главные модули и «центральные» функции (из SQLite), зависимости от других репозиториев
    (`go.mod`, `pom.xml`, `package.json`, импорты). По желанию — 2–3 фразы от локальной

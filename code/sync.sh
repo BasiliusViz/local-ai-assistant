@@ -157,8 +157,15 @@ if [ "${GRAPH_MERGE:-yes}" = "no" ]; then
         echo "Ни одного графа не построено."
         exit 1
     fi
-    python /app/graph_store.py build "$REPOS_DIR" --db "$GRAPH_DIR/graph.sqlite" --jenkins
-    exit $?
+    python /app/graph_store.py build "$REPOS_DIR" --db "$GRAPH_DIR/graph.sqlite" --jenkins || exit $?
+    # Карточки репозиториев (инструмент cb_repos) и хранилище Obsidian — по
+    # той же базе. Сбой здесь граф не отменяет
+    echo
+    echo "=== Карточки репозиториев ==="
+    python /app/repo_cards.py build "$REPOS_DIR" --db "$GRAPH_DIR/graph.sqlite" \
+        && python /app/repo_cards.py obsidian --cards "$GRAPH_DIR/cards.json" --out "$GRAPH_DIR/obsidian" \
+        || echo "    [!] карточки не собраны — граф при этом готов"
+    exit 0
 fi
 
 echo

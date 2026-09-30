@@ -241,9 +241,11 @@ class ToolsTest(unittest.TestCase):
     def test_list_names_and_label(self):
         tools = self.t.list()
         self.assertEqual({t["name"] for t in tools}, {"cb_query_graph", "cb_get_node", "cb_get_neighbors",
-                                                      "cb_shortest_path", "cb_graph_stats", "cb_god_nodes"})
+                                                      "cb_shortest_path", "cb_graph_stats", "cb_god_nodes",
+                                                      "cb_repos"})
         self.assertTrue(all(t["description"].startswith("[РЕЛИЗ]") for t in tools))
-        self.assertTrue(all("repo" in t["inputSchema"]["properties"] for t in tools))
+        # cb_repos — по карточкам, а не по графу: repo ему не нужен
+        self.assertTrue(all("repo" in t["inputSchema"]["properties"] for t in tools if t["name"] != "cb_repos"))
 
     def test_get_node(self):
         out = self.call("get_node", label="Save")
@@ -430,7 +432,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertTrue(r["result"]["isError"])
         self.assertIn("update-cb.sh", r["result"]["content"][0]["text"])
         r = self.missing.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-        self.assertEqual(len(r["result"]["tools"]), 6)
+        self.assertEqual(len(r["result"]["tools"]), 7)
 
 
 if __name__ == "__main__":

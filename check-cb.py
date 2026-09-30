@@ -258,6 +258,14 @@ def main() -> int:
             if missing:
                 shown = ", ".join(sorted(missing)[:10]) + (" ..." if len(missing) > 10 else "")
                 say(WARN, f"в графе релиза нет {len(missing)} репозиториев (Graphify не построил граф?): {shown}")
+    # Карточки репозиториев — инструмент cb_repos (code/repo_cards.py)
+    cards = cb_dir / "graph" / "cards.json"
+    try:
+        n_cards = len(json.loads(cards.read_text(encoding="utf-8"))["repos"])
+    except (OSError, ValueError, KeyError):
+        say(WARN, f"карточек репозиториев {cards} нет — ./update-cb.sh --cards")
+    else:
+        say(OK if n_cards >= len(cb) else WARN, f"карточек репозиториев {n_cards} из {len(cb)}")
 
     print("\n=== 5. Живой поиск ===")
     for tool, allowed, label in (("cb_search", cb, "релиз"), ("code_search", code, "обычный код")):

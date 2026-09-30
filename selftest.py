@@ -661,7 +661,7 @@ def main() -> int:
         rep.section(f"MCP: граф релиза CB18.5 ({args.cb_graph})")
         rep.skip("сервер отвечает", f"cb-graph не поднят ({why(e)}) — ./update-cb.sh")
     else:
-        check_mcp(rep, "граф релиза CB18.5", args.cb_graph, ["cb_get_neighbors"], verify)
+        check_mcp(rep, "граф релиза CB18.5", args.cb_graph, ["cb_get_neighbors", "cb_repos"], verify)
 
     dojo_tools = check_mcp(rep, "уязвимости", args.dojo, ["dojo_findings"], verify)
     if "dojo_findings" in dojo_tools and os.getenv("DOJO_PRODUCTS", "").strip():

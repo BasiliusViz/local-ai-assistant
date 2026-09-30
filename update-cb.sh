@@ -8,6 +8,7 @@
 #     ./update-cb.sh --download --only core   один репозиторий по части имени
 #     ./update-cb.sh --orphans  скачанные, но убранные из списка (их надо убрать из CB_DIR)
 #     ./update-cb.sh --resume   доделать оборвавшуюся индексацию, не начиная сначала
+#     ./update-cb.sh --cards    только карточки репозиториев (cb_repos) и Obsidian
 #
 # Релиз статичный: по расписанию не обновляется, только этой командой.
 # Список репозиториев — repos/cb.txt (пример: repos/cb.example.txt),
@@ -80,6 +81,18 @@ if extra:
     print(f"  mkdir -p {root}-excluded && mv " + " ".join(str(root / n) for n in extra) + f" {root}-excluded/")
 EOF
             exit $?
+            ;;
+        --cards)
+            # Только карточки репозиториев (cb_repos) и хранилище Obsidian —
+            # по готовой базе графа, минуты вместо часов
+            docker compose up -d cb-graph
+            docker compose exec -T cb-graph python /app/repo_cards.py build /data \
+                --db /data/graph/graph.sqlite || exit $?
+            docker compose exec -T cb-graph python /app/repo_cards.py obsidian \
+                --cards /data/graph/cards.json --out /data/graph/obsidian
+            rc=$?
+            echo "Obsidian: откройте $CB_DIR/graph/obsidian как хранилище (или скопируйте к себе)."
+            exit "$rc"
             ;;
         --download)
             # Только скачать, без графа и индекса: удобно качать блоками
