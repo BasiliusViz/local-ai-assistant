@@ -94,8 +94,24 @@ elif [ "$count" -eq 1 ]; then
     echo "Граф: $(basename $graphs) -> $GRAPH_DIR/graph.json"
 else
     # Несколько репозиториев сливаются в один граф: связи между сервисами
-    # видны только так
-    graphify merge-graphs $graphs --out "$GRAPH_DIR/graph.json" 2>&1 | sed 's/^/    /'
+    # видны только так.
+    # Через временный файл и с проверкой кода возврата: раньше вывод шёл в
+    # sed, код склейки терялся (set -e на конвейер не срабатывает), и упавшая
+    # склейка — на релизе из 120 репозиториев ей не хватило памяти — давала
+    # «Готово» без graph.json. Теперь прежний граф остаётся, а скрипт падает
+    merge_log="$GRAPH_DIR/merge.log"
+    if graphify merge-graphs $graphs --out "$GRAPH_DIR/graph.json.new" > "$merge_log" 2>&1 \
+            && [ -s "$GRAPH_DIR/graph.json.new" ]; then
+        sed 's/^/    /' "$merge_log"
+        mv "$GRAPH_DIR/graph.json.new" "$GRAPH_DIR/graph.json"
+    else
+        rc=$?
+        sed 's/^/    /' "$merge_log"
+        rm -f "$GRAPH_DIR/graph.json.new"
+        echo "Склейка графов не удалась (код $rc)."
+        [ "$rc" = 137 ] && echo "137 — процесс убит, почти всегда нехватка памяти: free -h."
+        exit 1
+    fi
 fi
 
 echo
@@ -106,4 +122,8 @@ echo "=== Связи Jenkins ==="
 python /app/jenkins_graph.py --graph "$GRAPH_DIR/graph.json" --repos "$REPOS_DIR"     || echo "    [!] связи Jenkins не добавлены - граф остался без них"
 
 echo
-echo "Готово. Узлов: $(grep -o '"id"' "$GRAPH_DIR/graph.json" | wc -l) (приблизительно)"
+if [ ! -s "$GRAPH_DIR/graph.json" ]; then
+    echo "Графа $GRAPH_DIR/graph.json нет — сборка не удалась, см. выше."
+    exit 1
+fi
+echo "Готово: $GRAPH_DIR/graph.json, $(du -h "$GRAPH_DIR/graph.json" | cut -f1)"
