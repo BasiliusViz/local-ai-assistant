@@ -64,6 +64,67 @@ for repo in $(echo "${CODE_REPOS:-}" | tr ',' ' '); do
     fi
 done
 
+# Что Graphify пропускает, в формате .gitignore — те же исключения, что у
+# поиска (SKIP_DIRS и тесты в kb/code_index.py). У Graphify свой список
+# короче: node_modules/build/target он пропускает, а vendor, тесты и
+# сгенерированный код — нет. На релизе CB18.5 граф ОДНОГО Go-репозитория с
+# vendor/ вышел 555 МБ (лимит чтения Graphify — 512), склеенный не влез бы
+# в память. Файл кладётся в корень каждого репозитория; Graphify выкидывает
+# по нему и то, что попало в граф раньше. Свой .graphifyignore репозитория
+# (без нашей пометки) не трогаем
+IGNORE_MARK="# LOCAL-AI: исключения для графа (code/sync.sh), файл перезаписывается"
+write_graphifyignore() {
+    f="$1/.graphifyignore"
+    if [ -f "$f" ] && ! grep -qF "$IGNORE_MARK" "$f"; then
+        echo "    [!] в репозитории свой .graphifyignore — оставляю его как есть"
+        return
+    fi
+    cat > "$f" <<EOF
+$IGNORE_MARK
+vendor/
+third_party/
+migrations/
+tests/
+test/
+testing/
+e2e/
+fixtures/
+__tests__/
+__mocks__/
+generated/
+__generated__/
+coverage/
+Pods/
+obj/
+.gradle/
+*_test.go
+test_*.py
+*_test.py
+conftest.py
+*Test.java
+*Tests.java
+*IT.java
+*Test.kt
+*Tests.kt
+*Spec.scala
+*Test.cs
+*Tests.cs
+*.spec.ts
+*.spec.js
+*.test.ts
+*.test.js
+*.min.js
+*.min.css
+*.pb.go
+*_pb2.py
+*_pb2_grpc.py
+*.generated.*
+*.g.dart
+*.designer.cs
+bundle.js
+EOF
+}
+
 echo
 echo "=== Построение графа ==="
 graphs=""
@@ -75,6 +136,7 @@ for dir in "$REPOS_DIR"/*/; do
     [ "$dir" = "$GRAPH_DIR/" ] && continue
     case "$name" in graph|.git) continue ;; esac
     echo "--- $name"
+    write_graphifyignore "$dir"
     # update, а не extract: только AST, без LLM и без сети
     graphify update "$dir" 2>&1 | grep -E "Rebuilt|error|Error" | sed 's/^/    /' || true
     if [ -f "$dir/graphify-out/graph.json" ]; then
