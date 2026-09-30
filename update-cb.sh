@@ -103,14 +103,14 @@ fi
 
 echo
 echo "=== 2/3. Граф релиза (cb-graph) ==="
-# Контейнер при старте граф не строит (code/cb-entry.sh) — строим здесь
+# Контейнер при старте граф не строит (code/cb-entry.sh) — строим здесь:
+# Graphify по каждому репозиторию, затем все графы в одну базу SQLite
+# (<CB_DIR>/graph/graph.sqlite). Сервер подхватывает новую базу сам
 docker compose up -d cb-graph
 if ! docker compose exec -T cb-graph /app/sync.sh; then
     echo "Граф релиза не построен." >&2
     exit 1
 fi
-# Graphify читает graph.json при старте — перезапуск, чтобы подхватил новый
-docker compose restart cb-graph
 
 echo
 echo "=== 3/3. Поиск по релизу (коллекция code_cb) ==="

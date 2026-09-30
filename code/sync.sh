@@ -144,9 +144,25 @@ for dir in "$REPOS_DIR"/*/; do
     fi
 done
 
+count=$(echo "$graphs" | wc -w)
+
+# Граф релиза CB18.5 (cb-graph, GRAPH_MERGE=no): без склейки. 120 графов
+# вместе — 3.4 ГБ, merge-graphs держит их в памяти целиком и падает. Вместо
+# этого каждый graph.json потоково ложится в одну базу SQLite, её читает
+# graph_server.py. Неизменённые репозитории пропускаются
+if [ "${GRAPH_MERGE:-yes}" = "no" ]; then
+    echo
+    echo "=== Загрузка графов в базу (без склейки) ==="
+    if [ "$count" -eq 0 ]; then
+        echo "Ни одного графа не построено."
+        exit 1
+    fi
+    python /app/graph_store.py build "$REPOS_DIR" --db "$GRAPH_DIR/graph.sqlite" --jenkins
+    exit $?
+fi
+
 echo
 echo "=== Сборка общего графа ==="
-count=$(echo "$graphs" | wc -w)
 if [ "$count" -eq 0 ]; then
     echo "Ни одного графа не построено."
     exit 1

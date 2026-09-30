@@ -202,6 +202,8 @@ services:
       # Клонирует repos/sync.py на хосте (update-cb.sh), не контейнер
       - CODE_REPOS=
       - MCP_PORT=8013
+      # Без склейки: графы репозиториев -> одна база SQLite (code/graph_store.py)
+      - GRAPH_MERGE=no
       - GRAPHIFY_MAX_GRAPH_BYTES=${GRAPHIFY_MAX_GRAPH_BYTES:-2GB}
     command: ["/app/cb-entry.sh"]
 

@@ -10,3 +10,6 @@
 !mcp_prefix.py
 !test_mcp_prefix.py
 !cb-entry.sh
+!graph_store.py
+!graph_server.py
+!test_graph_store.py

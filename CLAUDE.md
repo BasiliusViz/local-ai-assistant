@@ -31,7 +31,7 @@
 | `qdrant` | 6333 | векторная база: `knowledge` (документы, Jira, Dojo), `code` |
 | `kb` | 8010 | MCP: `kb_search` (документы), `code_search` (код), `jira_search` |
 | `code-graph` | 8011 | MCP Graphify: граф вызовов кода (кто вызывает, что сломается) |
-| `cb-graph` | 8013 | граф кода релиза CB18.5, инструменты `cb_*` (прослойка `code/mcp_prefix.py`); поиск по релизу — `cb_search` в `kb` |
+| `cb-graph` | 8013 | граф кода релиза CB18.5, инструменты `cb_*` (`code/graph_server.py` поверх SQLite); поиск по релизу — `cb_search` в `kb` |
 | `dojo` | 8012 | MCP: `dojo_findings`, `dojo_engagements`, `dojo_compare`, `dojo_release_notes`. Отдельный порт ради доступа: только AppSec |
 | `reranker` | 8081 | выключен, профиль `quality` |
 
@@ -96,7 +96,8 @@ jira/        sync.py, cron.sh, README
 dojo/        cron.sh
 repos/       sync.py (клон Bitbucket/GitFlic по токену), list.example.txt, тесты
 code/        образ code-graph и cb-graph: Graphify + jenkins_graph.py (шаги Jenkins в графе),
-             mcp_prefix.py (префикс cb_ к инструментам графа релиза)
+             graph_store.py + graph_server.py (граф релиза: графы репозиториев -> SQLite -> MCP cb_*),
+             mcp_prefix.py (прежняя прослойка, не запускается)
 tools/       dojo_release_notes.py — release notes одним файлом, только stdlib, для
              запуска у пользователя без сервера и модели (тест сверяет с kb/release_notes)
 testdocs/, corpus/   стенд замеров качества поиска (не прод)
@@ -154,7 +155,7 @@ win_old/     бывший Windows-стенд сервера, не поддерж
 
 Написано, но на живом стенде **не проверялось**: Jira, `repos/sync.py` на
 живых серверах, ветки DefectDojo (`dojo_compare.py`, живой API), релиз CB18.5
-(`cb_search`, `cb-graph` за прослойкой — тест, `guides/PLAN-CB.md`).
+(`cb_search`, `cb-graph` на SQLite — только тесты и маленькие графы, `guides/PLAN-CB-GRAPH.md`).
 
 **Не сделано:** аутентификации на портах нет (граница доступа — только порт и
 брандмауэр), `acl_groups` — заглушка `["all"]`, аудита нет, эталонный набор —

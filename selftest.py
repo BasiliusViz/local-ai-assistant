@@ -653,7 +653,7 @@ def main() -> int:
         check_kb_tools(rep, args.kb, verify)
 
     check_mcp(rep, "граф кода", args.code_graph, [], verify)
-    # Граф релиза за прослойкой: имена должны прийти уже с префиксом cb_.
+    # Граф релиза (code/graph_server.py): имена сразу с префиксом cb_.
     # Релиз есть не на каждом сервере — не отвечает, значит пропуск, не провал
     try:
         mcp_call(args.cb_graph, "tools/list", None, verify)

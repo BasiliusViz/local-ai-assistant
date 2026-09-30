@@ -80,6 +80,29 @@ Graphify при этом не правится — его версия в обр
 слетела бы при обновлении. Проверка: `docker compose exec code-graph python
 /app/test_jenkins_graph.py`.
 
+## Граф релиза CB18.5: SQLite вместо Graphify
+
+Контейнер `cb-graph` (порт 8013) — тот же образ, но граф другой величины:
+120 репозиториев, графы Graphify вместе 3.4 ГБ. Склеить их и держать в
+памяти, как делает Graphify, не выходит. Поэтому (`GRAPH_MERGE=no`):
+
+1. `sync.sh` строит граф Graphify по каждому репозиторию, как обычно;
+2. `graph_store.py build` потоково кладёт все `graph.json` в одну базу
+   `<CB_DIR>/graph/graph.sqlite` (ключ узла — репозиторий + id; неизменённые
+   репозитории пропускаются, удалённые из каталога — убираются);
+3. `graph_server.py` отдаёт по MCP инструменты `cb_get_node`,
+   `cb_get_neighbors`, `cb_query_graph`, `cb_shortest_path`, `cb_graph_stats`,
+   `cb_god_nodes` — как у Graphify, плюс необязательный `repo`. Новую базу
+   подхватывает сам, без перезапуска.
+
+Место: база примерно в 2.5 раза меньше суммы `graph.json`, но на время
+загрузки крупного репозитория рядом растут журнал WAL и промежуточная
+таблица — держите свободными ещё ~2 размера самого большого графа.
+
+Что в базе: `docker compose exec cb-graph python /app/graph_store.py stats
+--db /data/graph/graph.sqlite`. Тесты: `python /app/test_graph_store.py`.
+`mcp_prefix.py` — прежняя прослойка над Graphify, сейчас не запускается.
+
 ## Почему офлайн
 
 `graphify update` разбирает код через tree-sitter локально: **ни сети, ни

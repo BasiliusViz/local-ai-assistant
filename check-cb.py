@@ -11,7 +11,8 @@
                   репозитория, который есть только в релизе
   3. инструменты  :8010 отдаёт code_search и cb_search, :8011 — без префикса,
                   :8013 — только cb_*
-  4. графы        в графе обычного кода нет репозиториев релиза и наоборот
+  4. графы        в графе обычного кода нет репозиториев релиза и наоборот;
+                  граф релиза — база SQLite (code/graph_store.py), в ней все репозитории
   5. живой поиск  cb_search находит только релиз, code_search — только обычный код
 
 Код возврата — число провалов: 0 значит, что всё разделено.
@@ -22,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import sys
 import urllib.error
 import urllib.request
@@ -123,6 +125,18 @@ def graph_repos(path: Path, known: set[str]) -> set[str] | None:
     return found
 
 
+def db_repos(path: Path) -> set[str] | None:
+    """Репозитории в базе графа релиза (code/graph_store.py): таблица repos.
+    Открывается только на чтение."""
+    if not path.is_file():
+        return None
+    con = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        return {r[0] for r in con.execute("SELECT name FROM repos")}
+    finally:
+        con.close()
+
+
 def repo_of(path: str) -> str:
     path = path.replace("\\", "/")
     for root in ("/data/repos/", "/data/"):
@@ -204,7 +218,6 @@ def main() -> int:
     print("\n=== 4. Графы ===")
     for path, own, other_only, label in (
         (code_dir / "graph" / "graph.json", "обычного кода", cb_only, "релиза"),
-        (cb_dir / "graph" / "graph.json", "релиза", code_only, "обычного кода"),
     ):
         try:
             found = graph_repos(path, other_only)
@@ -217,6 +230,23 @@ def main() -> int:
             say(BAD, f"в графе {own} репозитории {label}: {', '.join(sorted(found))}")
         else:
             say(OK, f"в графе {own} репозиториев {label} нет")
+    db = cb_dir / "graph" / "graph.sqlite"
+    try:
+        in_db = db_repos(db)
+    except sqlite3.Error as e:
+        say(BAD, f"граф релиза {db} не прочитан: {e}")
+    else:
+        if in_db is None:
+            say(BAD, f"граф релиза: {db} нет — ./update-cb.sh")
+        else:
+            in_db.discard("_jenkins")
+            leaked = in_db & code_only
+            say(BAD if leaked else OK, f"в графе релиза репозитории обычного кода: {', '.join(sorted(leaked))}"
+                if leaked else f"в графе релиза репозиториев {len(in_db)}, обычного кода среди них нет")
+            missing = cb - in_db
+            if missing:
+                shown = ", ".join(sorted(missing)[:10]) + (" ..." if len(missing) > 10 else "")
+                say(WARN, f"в графе релиза нет {len(missing)} репозиториев (Graphify не построил граф?): {shown}")
 
     print("\n=== 5. Живой поиск ===")
     for tool, allowed, label in (("cb_search", cb, "релиз"), ("code_search", code, "обычный код")):
