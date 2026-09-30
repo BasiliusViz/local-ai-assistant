@@ -104,16 +104,22 @@ def facet_repos(qdrant: str, collection: str) -> set[str] | None:
     return {str(h["value"]) for h in data["result"]["hits"]}
 
 
-def graph_repos(path: Path, known: set[str]) -> set[str] | None:
+def graph_repos(path: Path, known: set[str], code_root: Path | None = None) -> set[str] | None:
     """Какие из известных репозиториев упоминаются в узлах графа. Формат узлов
     у Graphify не зафиксирован, поэтому смотрим все строковые поля с путями.
     Репозиторий — ПЕРВЫЙ сегмент пути от корня кода (/data/<репо>/...,
     /data/repos/<репо>/... или относительный <репо>/... у шагов Jenkins):
-    папка api внутри чужого репозитория не должна сойти за репозиторий api."""
+    папка api внутри чужого репозитория не должна сойти за репозиторий api.
+
+    Относительный путь Graphify бывает и от корня репозитория: папка
+    alert-manager/ (чарт) внутри обычного репозитория даёт тот же первый
+    сегмент. Если такая папка есть внутри какого-то репозитория code_root —
+    это она, а не репозиторий релиза."""
     if not path.is_file():
         return None
     graph = json.loads(path.read_text(encoding="utf-8"))
     found: set[str] = set()
+    relative: set[str] = set()
     for node in graph.get("nodes", []):
         if not isinstance(node, dict):
             continue
@@ -121,8 +127,11 @@ def graph_repos(path: Path, known: set[str]) -> set[str] | None:
             if isinstance(value, str) and "/" in value:
                 repo = repo_of(value)
                 if repo in known:
-                    found.add(repo)
-    return found
+                    (found if value.replace("\\", "/").startswith("/") else relative).add(repo)
+    if code_root is not None and relative:
+        inner = {r for r in relative if any(d.is_dir() and (d / r).is_dir() for d in code_root.iterdir())}
+        relative -= inner
+    return found | relative
 
 
 def db_repos(path: Path) -> set[str] | None:
@@ -231,7 +240,7 @@ def main() -> int:
         (code_dir / "graph" / "graph.json", "обычного кода", cb_only, "релиза"),
     ):
         try:
-            found = graph_repos(path, other_only)
+            found = graph_repos(path, other_only, code_dir)
         except (OSError, ValueError) as e:
             say(BAD, f"граф {own} {path} не прочитан: {e}")
             continue
