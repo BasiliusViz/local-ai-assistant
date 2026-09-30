@@ -130,11 +130,22 @@ def db_repos(path: Path) -> set[str] | None:
     Открывается только на чтение."""
     if not path.is_file():
         return None
-    con = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    uri = path.resolve().as_uri()
     try:
-        return {r[0] for r in con.execute("SELECT name FROM repos")}
-    finally:
-        con.close()
+        con = sqlite3.connect(uri + "?mode=ro", uri=True)
+        try:
+            return {r[0] for r in con.execute("SELECT name FROM repos")}
+        finally:
+            con.close()
+    except sqlite3.OperationalError:
+        # Базу создал контейнер от root: файлы журнала (-shm) хосту не
+        # записать, и обычное чтение не открывается. immutable — без журнала
+        # и блокировок; сервер базу только читает, так что данные те же
+        con = sqlite3.connect(uri + "?immutable=1", uri=True)
+        try:
+            return {r[0] for r in con.execute("SELECT name FROM repos")}
+        finally:
+            con.close()
 
 
 def repo_of(path: str) -> str:

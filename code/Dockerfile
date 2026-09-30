@@ -96,7 +96,7 @@ COPY jenkins_graph.py test_jenkins_graph.py /app/
 # Граф релиза CB18.5 (контейнер cb-graph): графы по репозиториям в SQLite и
 # MCP-сервер над ней. mcp_prefix.py — прежняя прослойка над Graphify, сейчас
 # не запускается, оставлена на случай небольшого графа
-COPY graph_store.py graph_server.py test_graph_store.py cb-entry.sh /app/
+COPY graph_store.py graph_server.py graph_report.py test_graph_store.py cb-entry.sh /app/
 COPY mcp_prefix.py test_mcp_prefix.py /app/
 RUN chmod +x /app/sync.sh /app/cb-entry.sh
 
