@@ -217,7 +217,35 @@ def main(argv: list[str] | None = None) -> int:
         calls = tot_units[t][0] + len(rows)
         print(f"  порог {t:g}: вызовов {calls}, больше {a.max_ktok:g} ктк — {tot_units[t][1]}; "
               f"при 20 с на вызов ~{calls * 20 / 3600:.1f} ч, при 60 с ~{calls / 60:.1f} ч")
+    if a.root:
+        jenkins_report(a.root)
     return 0
+
+
+STEP_NOTE_TOKENS = 60      # строка «шаг — что делает», подмешиваемая к пайплайну
+
+
+def jenkins_report(root: Path) -> None:
+    """Шаги общей библиотеки и пайплайны (jenkins_graph.py): к пересказу пайплайна
+    подмешиваются описания шагов, которые он зовёт, — поэтому библиотеки идут первыми."""
+    try:
+        import jenkins_graph
+        nodes, links, stats = jenkins_graph.build(root, 0)
+    except Exception as e:
+        print(f"\nJenkins: не посчитано ({e})")
+        return
+    if not stats.get("шагов") and not stats.get("пайплайнов"):
+        return
+    print("\nJenkins (jenkins_graph.py):")
+    for k, v in stats.items():
+        print(f"  {k}: {v}")
+    lib_repos = sorted({n["source_file"].split("/", 1)[0] for n in nodes
+                        if "/vars/" in "/" + n.get("source_file", "")})
+    callers = {l["source"] for l in links}
+    print(f"  репозиториев-библиотек (vars/): {len(lib_repos)} — их пересказывать первыми"
+          + (f": {', '.join(lib_repos[:10])}" + (" ..." if len(lib_repos) > 10 else "") if lib_repos else ""))
+    print(f"  добавка к входу: {len(links)} описаний шагов x ~{STEP_NOTE_TOKENS} ток. = "
+          f"~{len(links) * STEP_NOTE_TOKENS / 1000:.0f} ктк на {len(callers)} вызывающих файлов")
 
 
 if __name__ == "__main__":

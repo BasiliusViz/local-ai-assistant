@@ -50,6 +50,22 @@ class TestSurvey(unittest.TestCase):
             (repo / "logo.png").write_bytes(b"\x89PNG\0\0")
             self.assertEqual(main([d, "--thresholds", "1"]), 0)
 
+    def test_jenkins_report(self):
+        import contextlib
+        import io
+        from summary_survey import jenkins_report
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "lib" / "vars").mkdir(parents=True)
+            (Path(d) / "lib" / "vars" / "abActions.groovy").write_text("def call(Map cfg) { sh 'x' }")
+            (Path(d) / "app").mkdir()
+            (Path(d) / "app" / "Jenkinsfile").write_text("pipeline { steps { abActions(env: 'prod') } }")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                jenkins_report(Path(d))
+            text = out.getvalue()
+            self.assertIn("репозиториев-библиотек (vars/): 1 — их пересказывать первыми: lib", text)
+            self.assertIn("1 описаний шагов", text)
+
 
 if __name__ == "__main__":
     unittest.main()
