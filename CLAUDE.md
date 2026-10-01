@@ -166,6 +166,8 @@ Obsidian — только тесты, `guides/PLAN-CB-GRAPH.md`).
 
 ## Следующий шаг
 
+Релиз CB18.5: описания репозиториев от модели — `guides/PLAN-CB-SUMMARY.md`.
+
 Пробный `sooperset/mcp-atlassian` рядом с нашим индексом: живые точные запросы
 к Jira/Confluence (JQL/CQL) как дополнение к смысловому поиску. Подробности —
 `guides/HANDOFF.md`.
