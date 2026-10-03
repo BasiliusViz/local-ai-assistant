@@ -45,7 +45,9 @@ def rel_path(source_file: str, repo: str) -> str:
     """source_file -> путь от корня репозитория (Graphify пишет и абсолютные, и относительные)."""
     p = source_file.replace("\\", "/")
     marker = f"/{repo}/"
-    if marker in p:
+    # метку ищем только в абсолютном пути: в относительном src/requests/x.py у
+    # репозитория requests это его же подпапка
+    if (p.startswith("/") or p[1:3] == ":/") and marker in p:
         p = p.rsplit(marker, 1)[1]
     elif p.startswith(repo + "/"):
         p = p[len(repo) + 1:]

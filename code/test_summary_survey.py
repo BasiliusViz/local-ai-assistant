@@ -16,6 +16,7 @@ class TestSurvey(unittest.TestCase):
         self.assertEqual(rel_path("svc/src/a.go", "svc"), "src/a.go")
         self.assertEqual(rel_path("./.github/x.yml", "svc"), ".github/x.yml")
         self.assertEqual(rel_path("C:\\r\\svc\\b.py", "svc"), "b.py")
+        self.assertEqual(rel_path("src/requests/a.py", "requests"), "src/requests/a.py")
 
     def test_small_folders_merge_up(self):
         w = {"": 0.1, "a": 0.5, "a/b": 0.5, "c": 3.0}
