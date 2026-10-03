@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import summarize as S
@@ -11,6 +12,7 @@ class FakeModel:
 
     def __init__(self):
         self.prompts = []
+        self.fails = 0
 
     def chat(self, prompt, as_json):
         self.prompts.append(prompt)
@@ -96,6 +98,28 @@ class TestSummarize(unittest.TestCase):
             md = (Path(t) / "svc.md").read_text(encoding="utf-8")
             self.assertIn("Сгенерировано моделью", md)
             self.assertIn("Теги: тег", md)
+
+    def test_model_errors(self):
+        class Broken(FakeModel):
+            def __init__(self, ok):
+                super().__init__()
+                self.ok = ok
+
+            def chat(self, prompt, as_json):
+                if "папку «src/deep»" not in prompt and self.ok:
+                    return super().chat(prompt, as_json)
+                raise TimeoutError("долго")
+
+        with tempfile.TemporaryDirectory() as t:
+            r = make_repo(Path(t))
+            prep = S.prepare_repo(r, "svc", None, 0.001, 8000)
+            state, logs = {}, []
+            S.run_repo("svc", r, prep, state, Broken(True), None, 24, lambda: None, log=logs.append)
+            self.assertNotIn("readme", state["svc"])               # одна папка не готова — README ждёт
+            self.assertTrue(any("README отложен" in x for x in logs))
+            with self.assertRaises(S.ModelDown), unittest.mock.patch.object(S, "MAX_FAILS", 2):
+                # модель лежит — стоп, а не 2422 таймаута
+                S.run_repo("svc", r, prep, {}, Broken(False), None, 24, lambda: None, log=logs.append)
 
     def test_parse_folder_fallback(self):
         self.assertEqual(S.parse_folder("просто текст"), {"summary": "просто текст", "tags": []})

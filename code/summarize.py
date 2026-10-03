@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -42,6 +43,7 @@ from graph_store import find_graphs
 from summary_survey import (CHARS_PER_TOKEN, HEAD_CHARS, disk_files, nodes_from_graph_json,
                             parent_of, rel_path)
 
+MAX_FAILS = 5               # столько отказов модели подряд — она лежит, прогон останавливается
 PROMPT_VERSION = "1"        # правка промптов или выжимок -> увеличить, иначе возьмутся старые пересказы
 OUT_DIR = ".summaries"
 SKEL_LINES = 200            # строк скелета на файл, не больше
@@ -272,6 +274,7 @@ class Model:
             prefix = os.environ["OLLAMA_AUTH_PREFIX"] if "OLLAMA_AUTH_PREFIX" in os.environ else "Bearer "
             self.headers[e("OLLAMA_AUTH_HEADER", "Authorization").strip()] = prefix + key
         self.num_ctx, self.timeout = num_ctx, timeout
+        self.fails = 0          # отказов подряд
 
     def chat(self, prompt: str, as_json: bool) -> str:
         msgs = [{"role": "user", "content": prompt}]
@@ -309,6 +312,12 @@ def parse_folder(raw: str) -> dict:
 
 # --- прогон ------------------------------------------------------------------
 
+MODEL_ERRORS = (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, KeyError, ValueError)
+
+
+class ModelDown(Exception):
+    """Модель не отвечает MAX_FAILS раз подряд — дальше гнать бессмысленно."""
+
 def digest(*parts: str) -> str:
     return hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
 
@@ -318,14 +327,21 @@ def run_repo(repo: str, repo_dir: Path, prep: dict, state: dict, model: Model | 
     """Пересказы папок снизу вверх и README. model=None — только посчитать, что пойдёт в модель."""
     st = state.setdefault(repo, {"folders": {}})
     done: dict[str, dict] = {}
-    calls = reused = 0
+    calls = reused = failed = 0
     secs: list[float] = []
     mname = model.model if model else "-"
 
     def ask(prompt: str, as_json: bool) -> str:
         assert model is not None
         t = time.monotonic()
-        raw = model.chat(prompt, as_json)
+        try:
+            raw = model.chat(prompt, as_json)
+        except MODEL_ERRORS:
+            model.fails += 1
+            if model.fails >= MAX_FAILS:
+                raise ModelDown(f"{MAX_FAILS} отказов подряд")
+            raise
+        model.fails = 0
         secs.append(time.monotonic() - t)
         return raw
 
@@ -346,8 +362,9 @@ def run_repo(repo: str, repo_dir: Path, prep: dict, state: dict, model: Model | 
             continue
         try:
             res = parse_folder(ask(prompt, True))
-        except (urllib.error.URLError, TimeoutError, OSError, KeyError, ValueError) as e:
+        except MODEL_ERRORS as e:
             log(f"    {unit or '/'}: модель не ответила ({e}) — пропущено")
+            failed += 1
             continue
         done[unit] = st["folders"][unit] = {"hash": h, **res}
         log(f"    {unit or '/':<50} вход ~{ktok(prompt):.1f} ктк, {secs[-1]:.0f} с")
@@ -358,7 +375,9 @@ def run_repo(repo: str, repo_dir: Path, prep: dict, state: dict, model: Model | 
     body = readme_body(prep, repo_dir, {u: d["summary"] for u, d in done.items()})
     prompt = README_PROMPT.format(repo=repo, hint=hint_line(hint), body=body)
     h = digest(PROMPT_VERSION, mname, prompt)
-    if st.get("readme_hash") != h:
+    if failed and model is not None:    # README по неполным пересказам не писать — следующий прогон допишет
+        log(f"    README отложен: не готово папок — {failed}")
+    elif st.get("readme_hash") != h:
         calls += 1
         if model is None:
             log(f"    README вход ~{ktok(prompt):.1f} ктк")
@@ -368,7 +387,7 @@ def run_repo(repo: str, repo_dir: Path, prep: dict, state: dict, model: Model | 
                 st["readme_hash"] = h
                 log(f"    README вход ~{ktok(prompt):.1f} ктк, {secs[-1]:.0f} с")
                 save()
-            except (urllib.error.URLError, TimeoutError, OSError, KeyError, ValueError) as e:
+            except MODEL_ERRORS as e:
                 log(f"    README: модель не ответила ({e})")
     return {"calls": calls, "reused": reused, "secs": secs}
 
@@ -428,15 +447,32 @@ def main(argv: list[str] | None = None) -> int:
     if model:
         print(f"Модель {model.model} на {model.url} ({model.api})")
     total = {"calls": 0, "reused": 0, "secs": []}
-    for repo in jenkins_first(repos, root):
-        prep = prepare_repo(root / repo, repo, graphs.get(repo), a.threshold, a.small)
-        print(f"{repo}: файлов {len(prep['blocks'])}, пересказов папок {len(prep['parents'])}"
-              + ("" if repo in graphs else " (графа нет — без скелетов)"))
-        if a.cmd == "prepare":
-            dump_prep(out / "_prep" / repo, root / repo, prep, a.max_ktok)
-        r = run_repo(repo, root / repo, prep, state, model, hints.get(repo), a.max_ktok, save)
-        if model:
-            write_md(out, repo, state[repo])
+    code = 0
+    for i, repo in enumerate(jenkins_first(repos, root), 1):
+        try:
+            prep = prepare_repo(root / repo, repo, graphs.get(repo), a.threshold, a.small)
+            print(f"[{i}/{len(repos)}] {repo}: файлов {len(prep['blocks'])}, пересказов папок "
+                  f"{len(prep['parents'])}" + ("" if repo in graphs else " (графа нет — без скелетов)"),
+                  flush=True)
+            if a.cmd == "prepare":
+                dump_prep(out / "_prep" / repo, root / repo, prep, a.max_ktok)
+            r = run_repo(repo, root / repo, prep, state, model, hints.get(repo), a.max_ktok, save,
+                         log=lambda *x: print(*x, flush=True))
+            if model:
+                write_md(out, repo, state[repo])
+        except ModelDown as e:
+            print(f"\nМодель не отвечает ({e}) — остановлено на {repo}. Готовое сохранено, "
+                  "повторный запуск продолжит.", flush=True)
+            code = 2
+            break
+        except KeyboardInterrupt:
+            print(f"\nПрервано на {repo}. Готовое сохранено, повторный запуск продолжит.", flush=True)
+            code = 130
+            break
+        except Exception as e:      # испорченный граф или файл не должен ронять весь прогон
+            print(f"  {repo}: ошибка, пропущен ({type(e).__name__}: {e})", flush=True)
+            code = 1
+            continue
         for k in total:
             total[k] += r[k]
     if a.cmd == "prepare":
@@ -448,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
         avg = sum(s) / len(s) if s else 0
         print(f"\nВызовов: {len(s)} из {total['calls']}, взято готовых: {total['reused']}; "
               f"в среднем {avg:.0f} с, макс {max(s, default=0):.0f} с. README — в {out}")
-    return 0
+    return code
 
 
 def dump_prep(d: Path, repo_dir: Path, prep: dict, max_ktok: float) -> None:
