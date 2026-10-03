@@ -44,6 +44,9 @@ class TestSummarize(unittest.TestCase):
         self.assertEqual(p, {"": None, "a": "", "c": ""})
         self.assertEqual(S.unit_of("a/b", p), "a")
         self.assertEqual(S.plan_units({"x/y": 5}, 1), {"": None, "x/y": ""})   # пустая x — в корень
+        # порог 0: каждая папка с файлами — свой пересказ, пустая a — нет
+        self.assertEqual(S.plan_units({"": 0.1, "a/b": 0.01, "a/c": 0.2}, 0),
+                         {"": None, "a/b": "", "a/c": ""})
 
     def test_skeleton_takes_lines_and_docs(self):
         lines = ["# шапка", "import os", "def f(x):", '    """Делает f."""', "    return x"]
@@ -94,10 +97,17 @@ class TestSummarize(unittest.TestCase):
             self.assertTrue(any("папку «src/deep»" in p for p in m3.prompts))
             self.assertFalse(any("папку «big»" in p for p in m3.prompts))
 
-            S.write_md(Path(t), "svc", state["svc"])
-            md = (Path(t) / "svc.md").read_text(encoding="utf-8")
+            (Path(t) / "svc.md").write_text("старый формат")
+            S.write_md(Path(t), "svc", state["svc"], prep)
+            self.assertFalse((Path(t) / "svc.md").exists())
+            md = (Path(t) / "svc" / "README.md").read_text(encoding="utf-8")
             self.assertIn("Сгенерировано моделью", md)
-            self.assertIn("Теги: тег", md)
+            self.assertIn("[src](src/README.md)", md)
+            self.assertIn("`Dockerfile`", md)
+            sub = (Path(t) / "svc" / "src" / "deep" / "README.md").read_text(encoding="utf-8")
+            self.assertIn("# svc/src/deep", sub)
+            self.assertIn("Теги: тег", sub)
+            self.assertIn("`b.py`", sub)
 
     def test_model_errors(self):
         class Broken(FakeModel):

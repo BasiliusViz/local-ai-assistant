@@ -12,13 +12,15 @@
   - файл до --small байт — целиком; больше — скелет: строки узлов графа с диска
     (сигнатуры) плюс докстринги/комментарии под ними и шапка файла; нет узлов —
     первые HEAD_CHARS символов;
-  - папка с входом меньше --threshold тыс. токенов сливается в родительскую
+  - пересказ на каждую папку с файлами; папка, где только подпапки, своего не
+    получает; с --threshold N папка меньше N тыс. токенов сливается в родительскую
     (её файлы читаются в вызове родителя); корень — всегда отдельный вызов;
   - вызов на папку: её файлы + пересказы подпапок -> JSON {"summary", "tags"};
   - вызов на README: пересказы папок + точки входа, манифесты, конфиги целиком
     + подсказка из .summaries/hints.txt («репо: что это»).
 
-Результат: CODE_DIR/.summaries/<репо>.md и state.json (хеш входа -> пересказ):
+Результат: CODE_DIR/.summaries/<репо>/README.md (обзор) и <репо>/<папка>/README.md
+(пересказ папки, теги, файлы, ссылки на подпапки), state.json (хеш входа -> пересказ):
 повторный прогон зовёт модель только там, где вход изменился. prepare кладёт
 входы вызовов в .summaries/_prep/<репо>/ — посмотреть глазами, что увидит модель.
 
@@ -37,7 +39,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from graph_store import find_graphs
 from summary_survey import (CHARS_PER_TOKEN, HEAD_CHARS, disk_files, nodes_from_graph_json,
@@ -169,7 +171,7 @@ def plan_units(weights: dict[str, float], threshold: float) -> dict[str, str | N
             total.setdefault(folder, 0)
     units = set()
     for folder in sorted(total, key=lambda f: -f.count("/") if f else 1):
-        if folder and total[folder] < threshold:
+        if folder and (total[folder] < threshold or not total[folder]):   # пустая — только подпапки
             total[parent_of(folder)] += total[folder]
             continue
         units.add(folder)
@@ -392,19 +394,55 @@ def run_repo(repo: str, repo_dir: Path, prep: dict, state: dict, model: Model | 
     return {"calls": calls, "reused": reused, "secs": secs}
 
 
-def write_md(out: Path, repo: str, st: dict) -> None:
+def write_md(out: Path, repo: str, st: dict, prep: dict) -> None:
+    """Дерево README: <репо>/README.md — обзор, <репо>/<папка>/README.md — пересказ папки.
+
+    Мелкие файлы — для поиска: находится нужная папка, а не середина огромного файла.
+    """
     if not st.get("readme"):
         return
-    tags = sorted({t for d in st["folders"].values() for t in d.get("tags", [])})
-    lines = [f"# {repo}", "", f"> Сгенерировано моделью по коду ({time.strftime('%d.%m.%Y')}). "
-             "Может ошибаться: проверяйте по коду.", "", st["readme"], ""]
-    if tags:
-        lines += ["", "Теги: " + ", ".join(tags), ""]
-    lines += ["", "## Пересказы папок", ""]
-    for unit in sorted(st["folders"]):
-        d = st["folders"][unit]
-        lines += [f"### {unit or '/'}", d["summary"], ""]
-    (out / f"{repo}.md").write_text("\n".join(lines), encoding="utf-8")
+    base = out / repo
+    for old in base.rglob("README.md") if base.is_dir() else []:   # папки, которых больше нет
+        old.unlink()
+    (out / f"{repo}.md").unlink(missing_ok=True)                    # прежний формат — один файл
+    note = (f"> Сгенерировано моделью по коду ({time.strftime('%d.%m.%Y')}). "
+            "Может ошибаться: проверяйте по коду.")
+    kids: dict[str, list[str]] = {}
+    for u, p in prep["parents"].items():
+        if p is not None and u in st["folders"]:
+            kids.setdefault(p, []).append(u)
+
+    def tail(unit: str) -> list[str]:
+        lines = []
+        tags = st["folders"].get(unit, {}).get("tags") or []
+        if tags:
+            lines += ["Теги: " + ", ".join(tags), ""]
+        if kids.get(unit):
+            lines += ["## Подпапки", ""]
+            for k in sorted(kids[unit]):
+                rel = k[len(unit) + 1:] if unit else k
+                summary = st["folders"][k]["summary"].split(". ")[0].rstrip(".")
+                lines.append(f"- [{rel}]({rel}/README.md) — {summary}")
+            lines.append("")
+        files = sorted(prep["files"].get(unit, []))
+        if files:
+            lines += ["## Файлы", ""] + [f"- `{PurePosixPath(f).name}`" for f in files[:300]] + [""]
+        return lines
+
+    root = st["folders"].get("", {})
+    lines = [f"# {repo}", "", note, "", st["readme"], ""]
+    if root.get("summary"):
+        lines += ["## Корень репозитория", "", root["summary"], ""]
+    write_text(base / "README.md", lines + tail(""))
+    for unit, d in st["folders"].items():
+        if unit:
+            write_text(base / unit / "README.md",
+                       [f"# {repo}/{unit}", "", note, "", d["summary"], ""] + tail(unit))
+
+
+def write_text(path: Path, lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -412,7 +450,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("cmd", choices=["prepare", "run"])
     ap.add_argument("root", nargs="?", type=Path, help="каталог с клонами (по умолчанию CODE_DIR)")
     ap.add_argument("--repo", action="append", help="только этот репозиторий (можно несколько раз)")
-    ap.add_argument("--threshold", type=float, default=4, help="порог слияния папок, тыс. токенов (4)")
+    ap.add_argument("--threshold", type=float, default=0,
+                    help="папка с входом меньше стольких тыс. токенов сливается в родительскую; 0 — пересказ на каждую папку с файлами (по умолчанию)")
     ap.add_argument("--small", type=int, default=8000, help="файл до стольких байт — целиком (8000)")
     ap.add_argument("--max-ktok", type=float, default=24, help="вход одного вызова, тыс. токенов (24)")
     ap.add_argument("--num-ctx", type=int, default=32768, help="окно модели при OLLAMA_API=native")
@@ -459,7 +498,7 @@ def main(argv: list[str] | None = None) -> int:
             r = run_repo(repo, root / repo, prep, state, model, hints.get(repo), a.max_ktok, save,
                          log=lambda *x: print(*x, flush=True))
             if model:
-                write_md(out, repo, state[repo])
+                write_md(out, repo, state[repo], prep)
         except ModelDown as e:
             print(f"\nМодель не отвечает ({e}) — остановлено на {repo}. Готовое сохранено, "
                   "повторный запуск продолжит.", flush=True)
