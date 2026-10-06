@@ -26,6 +26,9 @@ services:
     environment:
       # payload на диске, в оперативной памяти только векторы
       - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
+      # По умолчанию Qdrant шлёт анонимную телеметрию на свой сервер. В закрытом
+      # контуре наружу не уходит ничего (проверка — check-egress.sh)
+      - QDRANT__TELEMETRY_DISABLED=true
 
   # MCP-сервер поиска: kb_search (документы) + code_search (код).
   # К нему подключается Continue.
