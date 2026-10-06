@@ -164,15 +164,23 @@ else
     grn "  маршрута по умолчанию нет — наружу сервер пакеты не отправит"
 fi
 if [ "$(id -u)" = 0 ]; then
-    FW=$( { iptables -S OUTPUT; iptables -S DOCKER-USER; iptables -S FORWARD; } 2>/dev/null           | grep -E -- '-P (OUTPUT|FORWARD) DROP|-j (DROP|REJECT)' )
-    NFT=$(nft list ruleset 2>/dev/null | grep -cE 'hook (output|forward).*policy drop|drop|reject')
-    if [ -n "$FW" ] || [ "${NFT:-0}" -gt 0 ]; then
-        echo "  на сервере есть запрещающие правила исходящих:"
-        printf '%s
-' "$FW" | sed '/^$/d; s/^/    /'
-        [ "${NFT:-0}" -gt 0 ] && echo "    nftables: правил drop/reject — $NFT (nft list ruleset)"
-    else
-        yel "  на самом сервере исходящие не ограничены (iptables/nftables)"; WARN=1
+    # FORWARD не смотрим: Docker сам ставит там политику DROP и свои DROP для
+    # изоляции сетей — это не запрет выхода наружу. Исходящие самого сервера —
+    # цепочка OUTPUT (и ufw), контейнеров — DOCKER-USER
+    fw_show() {   # $1 — для кого, $2 — правила
+        if [ -n "$2" ]; then
+            echo "  $1: есть ограничивающие правила (запрещают ли всё — смотрите сами):"
+            printf '%s\n' "$2" | sed 's/^/    /'
+        else
+            yel "  $1: на сервере не ограничены"; WARN=1
+        fi
+    }
+    fw_show "исходящие сервера (iptables OUTPUT)" \
+        "$(iptables -S OUTPUT 2>/dev/null | grep -E -- '-P OUTPUT DROP|-j (DROP|REJECT)')"
+    fw_show "исходящие контейнеров (iptables DOCKER-USER)" \
+        "$(iptables -S DOCKER-USER 2>/dev/null | grep -E -- '-j (DROP|REJECT)')"
+    if command -v ufw >/dev/null; then
+        ufw status verbose 2>/dev/null | grep -i '^Default' | sed 's/^/  ufw: /'
     fi
 else
     yel "  правила брандмауэра видны только под root (sudo ./check-egress.sh)"
@@ -227,7 +235,11 @@ if command -v ss >/dev/null; then
     fi
     NOW=$(printf '%s\n' "$NOW" | sed '/^$/d')
     if [ -n "$NOW" ]; then
-        red "  Есть соединения с внешними адресами:"; printf '%s\n' "$NOW" | sed 's/^/    /'; LEAK=1
+        red "  Есть соединения с внешними адресами (адрес:порт собеседника, процесс):"
+        printf '%s\n' "$NOW" | sed 's/^/    /'
+        echo "  Если это внутренние адреса вашей сети (не все сети контура — 10/172/192)"
+        echo "  или входящие подключения пользователей — это не утечка."
+        LEAK=1
     else
         grn "  Соединений с внешними адресами нет"
     fi
@@ -247,7 +259,7 @@ fi
 
 echo
 if [ $LEAK = 1 ]; then
-    red "ИТОГ: путь наружу есть — отправить данные с сервера можно (строки «НАРУЖУ ОТКРЫТО» выше)."
+    red "ИТОГ: найден путь наружу или соединение с внешним адресом (красные строки выше)."
     echo "Закрывать на брандмауэре контура: исходящие с сервера — только к внутренним адресам"
     echo "(модель, Confluence, Jira, Dojo, Nexus, DNS контура)."
     exit 1
