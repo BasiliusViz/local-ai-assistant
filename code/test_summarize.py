@@ -106,6 +106,9 @@ class TestSummarize(unittest.TestCase):
             self.assertIn("`Dockerfile`", md)
             sub = (Path(t) / "svc" / "src" / "deep" / "README.md").read_text(encoding="utf-8")
             self.assertIn("# svc/src/deep", sub)
+            # шапка для kb.doc_index: заголовок оттуда, дата — вне хеша текста
+            self.assertTrue(sub.startswith("---\ntitle: svc/src/deep (описание кода)\ngenerated: "))
+            self.assertNotRegex(sub.split("\n---\n", 1)[1], r"\d\d\.\d\d\.\d{4}")
             self.assertIn("Теги: тег", sub)
             self.assertIn("`b.py`", sub)
 

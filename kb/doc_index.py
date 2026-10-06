@@ -336,6 +336,16 @@ def main() -> int:
         action="store_true",
         help="переиндексировать всё, не глядя на то, что уже посчитано",
     )
+    ap.add_argument(
+        "--only",
+        help="брать только файлы с этим именем (README.md — описания кода от "
+        "code/summarize.py, без его служебных _prep/*.txt и hints.txt)",
+    )
+    ap.add_argument(
+        "--state-dir",
+        help="куда писать .index_state/.index_links (по умолчанию — в сам "
+        "каталог; нужен, когда каталог смонтирован только на чтение)",
+    )
     args = ap.parse_args()
 
     root = Path(args.root)
@@ -350,17 +360,21 @@ def main() -> int:
     for dirpath, dirnames, filenames in os.walk(root, onerror=lambda e: None):
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
         for name in filenames:
+            if args.only and name != args.only:
+                continue
             if Path(name).suffix.lower() in SUFFIXES:
                 files.append(Path(dirpath) / name)
     files.sort()
 
-    state_path = root / f".index_state.{args.source}.json"
+    state_dir = Path(args.state_dir) if args.state_dir else root
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state_path = state_dir / f".index_state.{args.source}.json"
     previous = {} if args.full else load_state(state_path)
     current: dict[str, str] = {}
 
     # Какие ссылка и заголовок сейчас записаны у точек каждого файла. Отдельный
     # файл, а не общее состояние: его формат читают и jira_index, и dojo_index
-    links_path = root / f".index_links.{args.source}.json"
+    links_path = state_dir / f".index_links.{args.source}.json"
     links = {} if args.full else load_links(links_path)
     relinked = 0
 

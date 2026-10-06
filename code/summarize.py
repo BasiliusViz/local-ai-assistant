@@ -405,8 +405,13 @@ def write_md(out: Path, repo: str, st: dict, prep: dict) -> None:
     for old in base.rglob("README.md") if base.is_dir() else []:   # папки, которых больше нет
         old.unlink()
     (out / f"{repo}.md").unlink(missing_ok=True)                    # прежний формат — один файл
-    note = (f"> Сгенерировано моделью по коду ({time.strftime('%d.%m.%Y')}). "
-            "Может ошибаться: проверяйте по коду.")
+    # Заголовок и дата — в шапке: kb.doc_index берёт из неё title, а хеш считает
+    # только по тексту, так что новая дата не заставляет пересчитывать векторы
+    today = time.strftime('%d.%m.%Y')
+    note = "> Сгенерировано моделью по коду. Может ошибаться: проверяйте по коду."
+
+    def head(title: str) -> list[str]:
+        return ["---", f"title: {title} (описание кода)", f"generated: {today}", "---", f"# {title}"]
     kids: dict[str, list[str]] = {}
     for u, p in prep["parents"].items():
         if p is not None and u in st["folders"]:
@@ -430,14 +435,14 @@ def write_md(out: Path, repo: str, st: dict, prep: dict) -> None:
         return lines
 
     root = st["folders"].get("", {})
-    lines = [f"# {repo}", "", note, "", st["readme"], ""]
+    lines = head(repo) + ["", note, "", st["readme"], ""]
     if root.get("summary"):
         lines += ["## Корень репозитория", "", root["summary"], ""]
     write_text(base / "README.md", lines + tail(""))
     for unit, d in st["folders"].items():
         if unit:
             write_text(base / unit / "README.md",
-                       [f"# {repo}/{unit}", "", note, "", d["summary"], ""] + tail(unit))
+                       head(f"{repo}/{unit}") + ["", note, "", d["summary"], ""] + tail(unit))
 
 
 def write_text(path: Path, lines: list[str]) -> None:

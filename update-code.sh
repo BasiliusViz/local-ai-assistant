@@ -19,13 +19,24 @@ if ! docker compose exec -T code-graph /app/sync.sh; then
 fi
 
 echo
-echo "=== 2/2. Векторный индекс кода ==="
+echo "=== 2/3. Векторный индекс кода ==="
 # /data, а не /data/repos: когда CODE_REPOS пустая и проекты лежат прямо в
 # CODE_DIR, каталог repos/ не создаётся вовсе, и жёсткий путь давал
 # "Не каталог: /data/repos". code_index сам спускается в repos/, если она есть
 if ! docker compose exec -T kb python -m kb.code_index /data; then
     echo "Индексация кода не удалась." >&2
     exit 1
+fi
+
+echo
+echo "=== 3/3. Описания кода от модели (code/summarize.py) ==="
+# Сами описания пишет summarize.py run (часы, отдельно). Здесь — только индекс
+# того, что уже есть: изменившиеся README. /data только на чтение, поэтому
+# состояние индекса — в /docs/.state
+if docker compose exec -T kb test -d /data/.summaries; then
+    MSYS_NO_PATHCONV=1 docker compose exec -T kb python -m kb.doc_index /data/.summaries         --source code-summaries --only README.md --state-dir /docs/.state         || echo "Индексация описаний не удалась." >&2
+else
+    echo "Описаний нет (CODE_DIR/.summaries) — пропускаю."
 fi
 
 echo
