@@ -228,9 +228,22 @@ if command -v ss >/dev/null; then
     SEEN=1
     NOW=$(snapshot)
     if [ "$WATCH" -gt 0 ] 2>/dev/null; then
-        echo "  Слушаю $WATCH с (раз в 2 с)..."
+        echo "  Слушаю $WATCH с (раз в 2 с; новые внешние соединения — сразу, ход — раз в 30 с)..."
         end=$((SECONDS + WATCH))
-        while [ $SECONDS -lt $end ]; do NOW=$(printf '%s\n%s' "$NOW" "$(snapshot)"); sleep 2; done
+        next=$((SECONDS + 30))
+        while [ $SECONDS -lt $end ]; do
+            while IFS= read -r line; do
+                [ -n "$line" ] || continue
+                printf '%s\n' "$NOW" | grep -qxF -- "$line" && continue
+                red "    новое: $line"
+                NOW=$(printf '%s\n%s' "$NOW" "$line")
+            done <<< "$(snapshot)"
+            if [ $SECONDS -ge $next ]; then
+                echo "    ...осталось $((end - SECONDS)) с"
+                next=$((SECONDS + 30))
+            fi
+            sleep 2
+        done
         NOW=$(printf '%s\n' "$NOW" | sort -u)
     fi
     NOW=$(printf '%s\n' "$NOW" | sed '/^$/d')
