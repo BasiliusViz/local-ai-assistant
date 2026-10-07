@@ -63,6 +63,7 @@ docker-compose.yml, Dockerfile   стек; образ kb общий для kb и
 deploy.sh / healthcheck.sh       развёртывание с нуля / проверка с живым поиском
 check-qdrant.sh                  диагностика Qdrant: упал ли, память, коллекции, журнал
 check-egress.sh                  уходит ли что-то с сервера в интернет (прямой выход, прокси, DNS)
+check-ollama-gateway.sh          какие пути API Ollama пускает шлюз (перед Open WebUI)
 update-code.sh                   граф + векторы кода одной командой
 update-cb.sh                     релиз CB18.5 отдельно: клоны, граф, поиск (guides/PLAN-CB.md)
 install-timers.sh, install-cron.sh   расписание обновлений
