@@ -216,13 +216,28 @@ echo "=== 4. Кто сейчас соединён с внешними адрес
 # 255.255.255.255 и 224-239.x (multicast), ff.. в IPv6 — рассылка по своей
 # сети (DHCP, обнаружение служб): маршрутизатор их наружу не пропускает
 PRIVATE='^(10\.|127\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.|\[?::1|\[?f[cdef]|0\.0\.0\.0|255\.255\.255\.255|2(2[4-9]|3[0-9])\.|\*)'
+# IP контейнера -> имя: в conntrack виден только IP
+CNAMES=$(docker ps -q 2>/dev/null | xargs -r docker inspect \
+    -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{$.Name}} {{end}}' 2>/dev/null \
+    | sed 's#/##g' | tr '\n' ' ')
 snapshot() {
     ss -Htunp state established 2>/dev/null | awk '{print $5, $6}' \
         | sed 's/^::ffff://' | grep -vE "$PRIVATE" | sort -u
     if [ "$(id -u)" = 0 ] && command -v conntrack >/dev/null; then
         # Соединения контейнеров (их не видно в ss хоста — они в своих namespace)
-        conntrack -L 2>/dev/null | grep -oE 'dst=[0-9.]+ sport=[0-9]+ dport=[0-9]+' \
-            | awk '!seen[$1]++ {sub("dst=",""); print $1, "(через NAT, контейнер?)", $3}' \
+        # Кто (контейнер по src) и состоялось ли: UNREPLIED — ответа не было
+        conntrack -L 2>/dev/null | awk -v names="$CNAMES" '
+            BEGIN { n = split(names, a, " "); for (i = 1; i < n; i += 2) cn[a[i]] = a[i + 1] }
+            { src = dst = port = ""
+              for (i = 1; i <= NF; i++) {
+                  if (src == "" && $i ~ /^src=/) src = substr($i, 5)
+                  else if (dst == "" && $i ~ /^dst=/) dst = substr($i, 5)
+                  else if (port == "" && $i ~ /^dport=/) port = substr($i, 7)
+              }
+              if (dst == "" || seen[dst FS src]++) next
+              who = (src in cn) ? "контейнер " cn[src] : "отправитель " src
+              state = ($0 ~ /UNREPLIED/) ? "ответа не было" : "СОЕДИНЕНИЕ БЫЛО"
+              print dst ":" port, "(conntrack: " who ", " state ")" }' \
             | grep -vE "$PRIVATE"
     fi
 }
