@@ -248,6 +248,18 @@ services:
       - OLLAMA_BASE_URLS=http://ollama-gate:11435
       # Окно 4096 по умолчанию обрежет ответы инструментов
       - 'DEFAULT_MODEL_PARAMS={"num_ctx": ${WEBUI_NUM_CTX:-32768}}'
+      # --- свой RAG и голос Open WebUI не нужны: поиск — наши MCP ---
+      # Движок эмбеддингов не пустой — значит, локальная модель
+      # (sentence-transformers поверх PyTorch) при старте НЕ грузится в память.
+      # Вызываться он не будет: загрузка файлов выключена, обработка в обход
+      - RAG_EMBEDDING_ENGINE=ollama
+      - RAG_OLLAMA_BASE_URL=http://ollama-gate:11435
+      - BYPASS_EMBEDDING_AND_RETRIEVAL=true
+      - ENABLE_RAG_HYBRID_SEARCH=false
+      - USER_PERMISSIONS_CHAT_FILE_UPLOAD=false
+      # Whisper грузится лениво — при первом голосовом вводе; кнопки убираем
+      - USER_PERMISSIONS_CHAT_STT=false
+      - USER_PERMISSIONS_CHAT_TTS=false
       # --- фоновые вызовы модели: оставить только заголовки чатов ---
       - ENABLE_TITLE_GENERATION=true
       - ENABLE_TAGS_GENERATION=false
