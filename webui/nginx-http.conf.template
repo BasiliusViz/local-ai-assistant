@@ -1,6 +1,6 @@
 # HTTP перед Open WebUI — ВРЕМЕННО, пока нет сертификата (WEBUI_MODE=http).
 # Пароль и чаты идут по сети открытым текстом. Перейти на HTTPS: сертификат
-# в WEBUI_CERT_DIR, в .env WEBUI_MODE=https и WEBUI_COOKIE_SECURE=true,
+# в WEBUI_CERT_DIR, в .env WEBUI_MODE=https,
 # затем docker compose --profile webui up -d open-webui webui-tls
 
 # Адрес open-webui ищем через DNS Docker при каждом запросе, а не на старте:

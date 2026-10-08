@@ -244,6 +244,11 @@ services:
         if [ ! -f /app/backend/data/webui.db ] && { [ -z "$$WEBUI_ADMIN_EMAIL" ] || [ -z "$$WEBUI_ADMIN_PASSWORD" ]; }; then
           echo "СТОП: первый запуск без WEBUI_ADMIN_EMAIL/WEBUI_ADMIN_PASSWORD в .env" >&2; exit 1
         fi
+        if [ "$$WEBUI_MODE" = "https" ]; then
+          export WEBUI_SESSION_COOKIE_SECURE=true WEBUI_AUTH_COOKIE_SECURE=true
+        else
+          echo "ВНИМАНИЕ: WEBUI_MODE=$$WEBUI_MODE — чат без шифрования, пароль идёт открытым текстом" >&2
+        fi
         exec bash start.sh
     # Порт на хост НЕ публикуется: пароль и чаты по HTTP не ходят.
     # Снаружи — только HTTPS через webui-tls
@@ -255,10 +260,10 @@ services:
     environment:
       # Без постоянного ключа после пересоздания контейнера всех разлогинит
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-}
-      # Cookie входа только по HTTPS. При WEBUI_MODE=http должно быть false,
-      # иначе браузер не сохранит вход
-      - WEBUI_SESSION_COOKIE_SECURE=${WEBUI_COOKIE_SECURE:-false}
-      - WEBUI_AUTH_COOKIE_SECURE=${WEBUI_COOKIE_SECURE:-false}
+      # Secure-cookie включает сторож (command) сам, если WEBUI_MODE=https:
+      # забыть при переходе на HTTPS нельзя. При http — выключены, иначе
+      # браузер не сохранит вход
+      - WEBUI_MODE=${WEBUI_MODE:-http}
       # --- ничего не качать и никуда не ходить ---
       - OFFLINE_MODE=true
       - HF_HUB_OFFLINE=1

@@ -93,9 +93,9 @@ OLLAMA_AUTH_PREFIX=
 
 - `http` (по умолчанию, **временно**): `http://АДРЕС-СЕРВЕРА`, без
   сертификата. Пароль и чаты идут по сети открытым текстом — годится, пока
-  пользователь один и сеть своя. `WEBUI_COOKIE_SECURE` не задавать
-- `https`: нужен сертификат (ниже), в `.env` `WEBUI_MODE=https` и
-  `WEBUI_COOKIE_SECURE=true`, `WEBUI_ORIGIN` с `https://`, затем
+  пользователь один и сеть своя
+- `https`: нужен сертификат (ниже), в `.env` `WEBUI_MODE=https` (Secure-cookie
+  включатся сами), `WEBUI_ORIGIN` с `https://`, затем
   `docker compose --profile webui up -d open-webui webui-tls`
 
 Для людей кроме себя — сертификат от внутреннего CA компании (PKI): компьютеры
