@@ -13,7 +13,13 @@
 конца, а на длинных ответах ещё и упрётся в таймаут.
 
 Слушает только localhost и намеренно: внутри лежит рабочий ключ, и
-выставлять такое в сеть нельзя — получится дыра в обход шлюза.
+выставлять такое в сеть нельзя — получится дыра в обход шлюза. Исключение —
+контейнер `ollama-gate` для Open WebUI (docker-compose.yml): там `--bind
+0.0.0.0`, но порт на хост не публикуется, прокси виден только внутри сети
+compose. Open WebUI сам ключ передать не может: свои заголовки он добавляет
+только в POST, а список моделей (GET /api/tags) уходит без них.
+
+Управление моделями (pull, delete, create и т.п.) прокси не пропускает.
 
     python ollama_proxy.py                  порт 11435, адрес из .env
     python ollama_proxy.py --port 11500
@@ -49,6 +55,25 @@ HOP_BY_HOP = {
 
 UPSTREAM = ""
 
+# Управление моделями на машине Ollama: скачать, удалить, собрать, выгрузить.
+# Через прокси не пускаем никогда: клиентам (Open WebUI, OASIS) нужно только
+# спрашивать модель, а у Open WebUI в админке есть кнопки pull и delete.
+# Закрыты ли эти пути на самом шлюзе — неизвестно, поэтому закрываем здесь
+BLOCKED_PREFIXES = (
+    "/api/pull",
+    "/api/push",
+    "/api/create",
+    "/api/copy",
+    "/api/delete",
+    "/api/blobs",
+)
+
+
+def blocked(path: str) -> bool:
+    """Путь управления моделями — такой запрос дальше не идёт."""
+    path = path.split("?", 1)[0].rstrip("/")
+    return any(path == p or path.startswith(p + "/") for p in BLOCKED_PREFIXES)
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -60,6 +85,11 @@ class Handler(BaseHTTPRequestHandler):
     def _relay(self, method: str) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
+
+        if blocked(self.path):
+            log.warning("отклонён %s %s: управление моделями закрыто", method, self.path)
+            self.send_error(403, "model management is disabled by proxy")
+            return
 
         headers = {
             k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP

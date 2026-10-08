@@ -210,6 +210,83 @@ services:
       - GRAPHIFY_MAX_GRAPH_BYTES=${GRAPHIFY_MAX_GRAPH_BYTES:-2GB}
     command: ["/app/cb-entry.sh"]
 
+  # Веб-чат в браузере: та же модель и те же MCP, что у Continue.
+  # По умолчанию НЕ поднимается: docker compose --profile webui up -d
+  # Камни закрытого контура и почему так — guides/PLAN-OPEN-WEBUI.md,
+  # настройка после запуска — guides/OPEN-WEBUI.md.
+  # Переменные ниже применяются только при ПЕРВОМ старте, дальше живут в базе
+  # Open WebUI; менять потом — в админке.
+  open-webui:
+    profiles: ["webui"]
+    # Версия закреплена: образ в контур заносится руками, :main меняется
+    # каждый день. Полный образ, не slim: в slim нет вшитых моделей
+    image: ${WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.4}
+    container_name: open-webui
+    restart: unless-stopped
+    ports:
+      - "${WEBUI_PORT:-3000}:8080"
+    volumes:
+      # Именованный том, не папка хоста: при первом запуске Docker копирует в
+      # него вшитые модели из образа. Пустая папка хоста их закрыла бы, и
+      # Open WebUI пошёл бы их качать
+      - open-webui:/app/backend/data
+    environment:
+      # Без постоянного ключа после пересоздания контейнера всех разлогинит
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-}
+      # --- ничего не качать и никуда не ходить ---
+      - OFFLINE_MODE=true
+      - HF_HUB_OFFLINE=1
+      - ENABLE_VERSION_UPDATE_CHECK=false
+      - ENABLE_WEB_SEARCH=false
+      - ENABLE_COMMUNITY_SHARING=false
+      - ENABLE_DIRECT_CONNECTIONS=false
+      - ENABLE_OPENAI_API=false
+      - ENABLE_CODE_INTERPRETER=false
+      - ENABLE_EVALUATION_ARENA_MODELS=false
+      # --- модель: только через ollama-gate, ключа у Open WebUI нет ---
+      - ENABLE_OLLAMA_API=true
+      - OLLAMA_BASE_URLS=http://ollama-gate:11435
+      # Окно 4096 по умолчанию обрежет ответы инструментов
+      - 'DEFAULT_MODEL_PARAMS={"num_ctx": ${WEBUI_NUM_CTX:-32768}}'
+      # --- фоновые вызовы модели: оставить только заголовки чатов ---
+      - ENABLE_TITLE_GENERATION=true
+      - ENABLE_TAGS_GENERATION=false
+      - ENABLE_FOLLOW_UP_GENERATION=false
+      - ENABLE_AUTOCOMPLETE_GENERATION=false
+      - ENABLE_RETRIEVAL_QUERY_GENERATION=false
+      - ENABLE_SEARCH_QUERY_GENERATION=false
+      # --- пользователи ---
+      # Новые учётки ждут одобрения админа; регистрацию закрыть в админке
+      # после первого входа (первый вошедший — админ)
+      - DEFAULT_USER_ROLE=pending
+      # В чатах находки Dojo и код: админ чужие чаты не читает
+      - ENABLE_ADMIN_CHAT_ACCESS=false
+    depends_on:
+      - ollama-gate
+
+  # Прокси к шлюзу Ollama для Open WebUI (ollama_proxy.py из образа kb).
+  # Зачем: Open WebUI свои заголовки (x-api-key) добавляет только в POST, а
+  # список моделей GET /api/tags уходит без них — шлюз отвечает 403 и моделей
+  # нет. Прокси дописывает ключ в каждый запрос и не пускает pull/delete/create.
+  # Порт на хост НЕ публикуется: внутри рабочий ключ, видно только из compose
+  ollama-gate:
+    profiles: ["webui"]
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+    container_name: ollama-gate
+    restart: unless-stopped
+    command: ["python", "ollama_proxy.py", "--bind", "0.0.0.0", "--port", "11435"]
+    environment:
+      - KB_OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434/v1}
+      - KB_OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
+      - KB_OLLAMA_AUTH_HEADER=${OLLAMA_AUTH_HEADER:-Authorization}
+      - KB_OLLAMA_AUTH_PREFIX=${OLLAMA_AUTH_PREFIX-Bearer }
+      # Без этого print() буферизуется и в docker logs пусто
+      - PYTHONUNBUFFERED=1
+
   # Реранкер второй ступени. По умолчанию НЕ поднимается: на наших замерах
   # прибавил один вопрос из пятнадцати, но стоил 48 секунд на запрос (CPU).
   # Поднять: docker compose --profile quality up -d, затем KB_RERANK=1
@@ -223,3 +300,8 @@ services:
     volumes:
       - ${TEI_DIR:-./data/tei}:/data
     command: ["--model-id", "BAAI/bge-reranker-v2-m3"]
+
+# Данные Open WebUI: учётки, чаты, настройки и вшитые модели из образа.
+# Удалить вместе с чатами: docker volume rm <проект>_open-webui
+volumes:
+  open-webui:

@@ -35,6 +35,8 @@ COPY selftest.py ./
 COPY continue-rules.yaml ./
 # Автономный скрипт release notes: тест сверяет его документ с серверным
 COPY tools/ ./tools/
+# Прокси с ключом шлюза — для Open WebUI (сервис ollama-gate в compose)
+COPY ollama_proxy.py ./
 
 # Внутри контейнера localhost - это сам контейнер, а не хост.
 # Соседние сервисы доступны по именам из compose.
