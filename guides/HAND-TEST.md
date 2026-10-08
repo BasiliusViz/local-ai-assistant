@@ -374,3 +374,63 @@ pgrep -l code
 
 Ответ странный — развернуть блок вызова инструмента в чате: там видно, с
 какими аргументами модель его позвала и что он вернул. Это прислать.
+
+## Веб-чат Open WebUI (на сервере)
+
+Настройка — `guides/OPEN-WEBUI.md`. Здесь только проверки, по одной.
+
+### 1. Прокси запущен и знает ключ
+
+```bash
+docker logs ollama-gate
+```
+
+Должно быть «Пересылаю в http://..., добавляя заголовок x-api-key».
+
+### 2. Шлюз принимает ключ через прокси
+
+Тот же запрос, что Open WebUI делает первым: список моделей.
+
+```bash
+docker compose exec ollama-gate python -c "import requests; print(requests.get('http://localhost:11435/api/tags').status_code)"
+```
+
+| Вывод | Что значит |
+|---|---|
+| `200` | всё в порядке, Open WebUI увидит модели |
+| `403` / `401` | шлюз не принял ключ: `OLLAMA_API_KEY`, `OLLAMA_AUTH_HEADER=x-api-key`, `OLLAMA_AUTH_PREFIX=` (пустой) в `.env`, затем `docker compose --profile webui up -d ollama-gate` |
+| `502` / ошибка соединения | прокси не дошёл до шлюза: адрес в `OLLAMA_URL` |
+
+### 3. Управление моделями закрыто
+
+```bash
+docker compose exec ollama-gate python -c "import requests; print(requests.post('http://localhost:11435/api/pull', json={'model': 'x'}).status_code)"
+```
+
+Должно быть `403` — отбил прокси, до шлюза запрос не дошёл.
+
+### 4. Open WebUI запустился
+
+```bash
+docker logs --tail 30 open-webui
+```
+
+Должна быть строка о запуске на порту 8080, без `Traceback`.
+
+### 5. Сколько ест
+
+```bash
+docker stats --no-stream open-webui ollama-gate
+```
+
+### 6. Наружу ничего не уходит
+
+```bash
+./check-egress.sh --quiet --watch 600
+```
+
+### 7. В браузере
+
+`http://АДРЕС-СЕРВЕРА:3000`: модель в списке есть; обычный вопрос — ответ
+развёрнутый; «поищи в базе ...» — вызван `kb_search`; «что в dojo по ...» —
+`dojo_findings`.
