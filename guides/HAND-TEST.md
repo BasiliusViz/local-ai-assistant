@@ -429,8 +429,24 @@ docker stats --no-stream open-webui ollama-gate
 ./check-egress.sh --quiet --watch 600
 ```
 
-### 7. В браузере
+### 7. HTTPS
 
-`http://АДРЕС-СЕРВЕРА:3000`: модель в списке есть; обычный вопрос — ответ
+```bash
+curl -sk -o /dev/null -w '%{http_code}
+' https://localhost/
+```
+
+Должно быть `200`. По HTTP — перенаправление на HTTPS:
+
+```bash
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}
+' http://localhost/
+```
+
+Должно быть `301 https://...`. Порт 3000 больше не отвечает — так и задумано.
+
+### 8. В браузере
+
+`https://АДРЕС-СЕРВЕРА`: модель в списке есть; обычный вопрос — ответ
 развёрнутый; «поищи в базе ...» — вызван `kb_search`; «что в dojo по ...» —
 `dojo_findings`.

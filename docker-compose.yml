@@ -223,8 +223,8 @@ services:
     image: ${WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.4}
     container_name: open-webui
     restart: unless-stopped
-    ports:
-      - "${WEBUI_PORT:-3000}:8080"
+    # Порт на хост НЕ публикуется: пароль и чаты по HTTP не ходят.
+    # Снаружи — только HTTPS через webui-tls
     volumes:
       # Именованный том, не папка хоста: при первом запуске Docker копирует в
       # него вшитые модели из образа. Пустая папка хоста их закрыла бы, и
@@ -233,6 +233,9 @@ services:
     environment:
       # Без постоянного ключа после пересоздания контейнера всех разлогинит
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-}
+      # Cookie входа только по HTTPS
+      - WEBUI_SESSION_COOKIE_SECURE=true
+      - WEBUI_AUTH_COOKIE_SECURE=true
       # --- ничего не качать и никуда не ходить ---
       - OFFLINE_MODE=true
       - HF_HUB_OFFLINE=1
@@ -275,6 +278,25 @@ services:
       - ENABLE_ADMIN_CHAT_ACCESS=false
     depends_on:
       - ollama-gate
+
+  # HTTPS перед Open WebUI: nginx с самоподписанным (или выданным CA)
+  # сертификатом из WEBUI_CERT_DIR. Конфиг — webui/nginx.conf.
+  # HTTP на WEBUI_HTTP_PORT только перенаправляет на HTTPS
+  webui-tls:
+    profiles: ["webui"]
+    image: ${WEBUI_TLS_IMAGE:-nginx:1.27-alpine}
+    container_name: webui-tls
+    restart: unless-stopped
+    ports:
+      - "${WEBUI_HTTPS_PORT:-443}:443"
+      - "${WEBUI_HTTP_PORT:-80}:80"
+    volumes:
+      - ./webui/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${WEBUI_CERT_DIR:-./data/webui-cert}:/etc/nginx/certs:ro
+    environment:
+      - WEBUI_HTTPS_PORT=${WEBUI_HTTPS_PORT:-443}
+    depends_on:
+      - open-webui
 
   # Прокси к шлюзу Ollama для Open WebUI (ollama_proxy.py из образа kb).
   # Зачем: Open WebUI свои заголовки (x-api-key) добавляет только в POST, а

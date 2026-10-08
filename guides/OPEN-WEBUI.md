@@ -9,7 +9,7 @@
 ## Как он подключается
 
 ```
-браузер ──:3000──> open-webui ──> ollama-gate:11435 ──(+ x-api-key)──> шлюз Ollama (OLLAMA_URL)
+браузер ──HTTPS :443──> webui-tls (nginx) ──> open-webui ──> ollama-gate:11435 ──(+ x-api-key)──> шлюз Ollama (OLLAMA_URL)
                        │          (только внутри compose, pull/delete/create — 403)
                        │
                        └── MCP по внутренней сети Docker:
@@ -80,10 +80,33 @@ OLLAMA_AUTH_PREFIX=
 меняет — менять в админке. Так задумано: иначе перезапуск сбрасывал бы MCP,
 настроенные руками.
 
-## 3. Запуск
+## 3. Сертификат HTTPS
+
+Порт Open WebUI наружу не открыт: по HTTP пароль и чаты шли бы открытым
+текстом. Снаружи — только HTTPS через `webui-tls` (nginx,
+`webui/nginx.conf.template`). Самоподписанный сертификат — на сервере, в
+папке проекта. `АДРЕС` — IP сервера, по которому открываете чат (и имя, если
+есть: `DNS:имя` через запятую):
 
 ```bash
-docker compose --profile webui up -d --build ollama-gate open-webui
+mkdir -p data/webui-cert
+```
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 825 -keyout data/webui-cert/server.key -out data/webui-cert/server.crt -subj "/CN=local-ai" -addext "subjectAltName=IP:АДРЕС"
+```
+
+Ключ читает nginx от root при старте — права по умолчанию не трогать, папка
+`data/` в git не попадает. Браузер один раз предупредит о недоверенном сертификате —
+«Дополнительно → перейти». Чтобы не предупреждал, `server.crt` добавить в
+доверенные корневые на своём компьютере. Выдаст сертификат внутренний CA —
+положить его файлы под теми же именами и `docker compose --profile webui
+restart webui-tls`.
+
+## 4. Запуск
+
+```bash
+docker compose --profile webui up -d --build ollama-gate open-webui webui-tls
 ```
 
 ```bash
@@ -102,7 +125,7 @@ docker compose exec ollama-gate python -c "import requests; print(requests.get('
 docker logs -f open-webui
 ```
 
-Ждать строку о запуске на порту 8080. Затем открыть `http://АДРЕС-СЕРВЕРА:3000`
+Ждать строку о запуске на порту 8080. Затем открыть `https://АДРЕС-СЕРВЕРА`
 и зарегистрироваться — **первая учётка становится админом**.
 
 Сразу после входа, до любых настроек, проверить, что наружу ничего не ушло:
@@ -111,7 +134,7 @@ docker logs -f open-webui
 ./check-egress.sh --quiet --watch 600
 ```
 
-## 4. Админка (руками, один раз)
+## 5. Админка (руками, один раз)
 
 **Admin Panel → Settings → Connections.** Ollama: `http://ollama-gate:11435`
 (уже подставлено при первом старте), **поле API Key и Headers пустые** —
@@ -135,7 +158,7 @@ Connection**, четыре раза:
 **Admin Panel → Settings → Audio:** STT и TTS — не использовать (Whisper
 вшит в образ, но не нужен).
 
-## 5. Модель «LOCAL-AI»
+## 6. Модель «LOCAL-AI»
 
 **Workspace → Models → +**:
 
@@ -148,7 +171,7 @@ Connection**, четыре раза:
 - Advanced Params — `num_ctx` уже 32768 по умолчанию (`DEFAULT_MODEL_PARAMS`);
   Function Calling — Native
 
-## 6. Проверка
+## 7. Проверка
 
 1. Обычный вопрос без поиска — ответ развёрнутый, не «из двух символов»
 2. «поищи в базе, как развернуть ...» — вызван `kb_search`, в ответе ссылки
@@ -171,4 +194,4 @@ Connection**, четыре раза:
 - Своего RAG Open WebUI (загрузка файлов, Knowledge): поиск — только наши MCP
 - Подтверждения вызова инструмента, как «Ask first» в Continue: модель зовёт
   сама. Все инструменты только на чтение, поэтому принимаем
-- TLS: пароль идёт по HTTP, как и остальные порты стека. Позже — обратный прокси
+- TLS у остальных портов стека (MCP, Qdrant) — там по-прежнему HTTP
