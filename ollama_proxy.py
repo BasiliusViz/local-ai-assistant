@@ -70,8 +70,21 @@ BLOCKED_PREFIXES = (
 
 
 def blocked(path: str) -> bool:
-    """Путь управления моделями — такой запрос дальше не идёт."""
-    path = path.split("?", 1)[0].rstrip("/")
+    """Путь управления моделями — такой запрос дальше не идёт.
+
+    Путь, записанный не в простейшем виде (%-кодирование, //, /./, /../,
+    обратная косая), отбиваем целиком: шлюз или Ollama могут его
+    нормализовать, и `/api/%70ull` или `//api/pull` превратятся в pull в
+    обход списка. Нормальным клиентам такие пути не нужны.
+    """
+    path = path.split("?", 1)[0].split("#", 1)[0]
+    if (
+        not path.startswith("/")
+        or any(s in path for s in ("%", "//", "\\"))
+        or any(seg in (".", "..") for seg in path.split("/"))
+    ):
+        return True
+    path = path.lower().rstrip("/")
     return any(path == p or path.startswith(p + "/") for p in BLOCKED_PREFIXES)
 
 
