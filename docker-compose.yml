@@ -230,6 +230,21 @@ services:
     # видны лишь MCP-серверы, ollama-gate и webui-tls
     networks: [webui]
     restart: unless-stopped
+    # Сторож перед штатным start.sh. Без ключа сессий — не стартовать (молча
+    # придуманный ключ разлогинит всех при пересоздании). На чистой базе без
+    # админа в .env — не стартовать: ENABLE_SIGNUP=false первого пользователя
+    # не останавливает, и админом стал бы первый, кто откроет страницу
+    command:
+      - bash
+      - -c
+      - |
+        if [ -z "$$WEBUI_SECRET_KEY" ]; then
+          echo "СТОП: WEBUI_SECRET_KEY не задан в .env" >&2; exit 1
+        fi
+        if [ ! -f /app/backend/data/webui.db ] && { [ -z "$$WEBUI_ADMIN_EMAIL" ] || [ -z "$$WEBUI_ADMIN_PASSWORD" ]; }; then
+          echo "СТОП: первый запуск без WEBUI_ADMIN_EMAIL/WEBUI_ADMIN_PASSWORD в .env" >&2; exit 1
+        fi
+        exec bash start.sh
     # Порт на хост НЕ публикуется: пароль и чаты по HTTP не ходят.
     # Снаружи — только HTTPS через webui-tls
     volumes:

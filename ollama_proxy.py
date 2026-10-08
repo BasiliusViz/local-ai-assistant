@@ -70,7 +70,7 @@ ALLOWED_PATHS = {
     "/api/embeddings",
 }
 # OpenAI-совместимый API: только генерация, эмбеддинги и список моделей
-ALLOWED_PREFIXES = ("/v1/chat/", "/v1/completions", "/v1/embeddings", "/v1/models")
+ALLOWED_PREFIXES = ("/v1/chat", "/v1/completions", "/v1/embeddings", "/v1/models")
 
 # Тело запроса к модели — текст; больше этого — не наш клиент
 MAX_BODY = 20 * 1024 * 1024
@@ -98,7 +98,7 @@ def blocked(path: str) -> bool:
     path = path.rstrip("/")
     if path in ALLOWED_PATHS:
         return False
-    return not any(path == p.rstrip("/") or path.startswith(p) for p in ALLOWED_PREFIXES)
+    return not any(path == p or path.startswith(p + "/") for p in ALLOWED_PREFIXES)
 
 
 class Handler(BaseHTTPRequestHandler):
