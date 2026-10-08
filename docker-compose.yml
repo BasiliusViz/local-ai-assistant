@@ -42,6 +42,7 @@ services:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
     container_name: kb
+    networks: [default, webui]
     restart: unless-stopped
     ports:
       - "${KB_PORT:-8010}:8010"
@@ -132,6 +133,7 @@ services:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
     container_name: dojo
+    networks: [default, webui]
     restart: unless-stopped
     command: ["python", "-m", "kb.dojo_server"]
     ports:
@@ -177,6 +179,7 @@ services:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
     container_name: code-graph
+    networks: [default, webui]
     restart: unless-stopped
     ports:
       - "${CODE_GRAPH_PORT:-8011}:8011"
@@ -196,6 +199,7 @@ services:
   cb-graph:
     build: *code-graph-build
     container_name: cb-graph
+    networks: [default, webui]
     restart: unless-stopped
     ports:
       - "${CB_GRAPH_PORT:-8013}:8013"
@@ -222,6 +226,9 @@ services:
     # каждый день. Полный образ, не slim: в slim нет вшитых моделей
     image: ${WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.4}
     container_name: open-webui
+    # Только внутренняя сеть webui: нет выхода в интернет и нет Qdrant —
+    # видны лишь MCP-серверы, ollama-gate и webui-tls
+    networks: [webui]
     restart: unless-stopped
     # Порт на хост НЕ публикуется: пароль и чаты по HTTP не ходят.
     # Снаружи — только HTTPS через webui-tls
@@ -246,6 +253,14 @@ services:
       - ENABLE_OPENAI_API=false
       - ENABLE_CODE_INTERPRETER=false
       - ENABLE_EVALUATION_ARENA_MODELS=false
+      # --- никакого своего кода в контейнере ---
+      # Плагины (Tools/Functions) — произвольный Python на сервере, а при
+      # старте ещё и pip install из интернета. Наши MCP идут другой веткой и
+      # от этого не зависят (проверено по исходникам v0.11.4). Это обычные
+      # env, не из базы: действуют при каждом старте
+      - ENABLE_PLUGINS=false
+      - ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS=false
+      - USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS=false
       # --- модель: только через ollama-gate, ключа у Open WebUI нет ---
       - ENABLE_OLLAMA_API=true
       - OLLAMA_BASE_URLS=http://ollama-gate:11435
@@ -271,9 +286,16 @@ services:
       - ENABLE_RETRIEVAL_QUERY_GENERATION=false
       - ENABLE_SEARCH_QUERY_GENERATION=false
       # --- пользователи ---
-      # Новые учётки ждут одобрения админа; регистрацию закрыть в админке
-      # после первого входа (первый вошедший — админ)
+      # Админ создаётся из .env при первом старте, регистрация закрыта сразу:
+      # иначе админом станет первый, кто успеет открыть страницу.
+      # Пароль после первого входа из .env убрать (см. guides/OPEN-WEBUI.md)
+      - WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL:-}
+      - WEBUI_ADMIN_PASSWORD=${WEBUI_ADMIN_PASSWORD:-}
+      - WEBUI_ADMIN_NAME=${WEBUI_ADMIN_NAME:-admin}
+      - ENABLE_SIGNUP=false
       - DEFAULT_USER_ROLE=pending
+      # Запросы к API — только со своей страницы (адрес чата, https://...)
+      - CORS_ALLOW_ORIGIN=${WEBUI_ORIGIN:-*}
       # В чатах находки Dojo и код: админ чужие чаты не читает
       - ENABLE_ADMIN_CHAT_ACCESS=false
     depends_on:
@@ -286,6 +308,7 @@ services:
     profiles: ["webui"]
     image: ${WEBUI_TLS_IMAGE:-nginx:1.27-alpine}
     container_name: webui-tls
+    networks: [default, webui]
     restart: unless-stopped
     ports:
       - "${WEBUI_HTTPS_PORT:-443}:443"
@@ -311,6 +334,7 @@ services:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
     container_name: ollama-gate
+    networks: [default, webui]
     restart: unless-stopped
     command: ["python", "ollama_proxy.py", "--bind", "0.0.0.0", "--port", "11435"]
     environment:
@@ -339,3 +363,9 @@ services:
 # Удалить вместе с чатами: docker volume rm <проект>_open-webui
 volumes:
   open-webui:
+
+# webui — внутренняя (internal): у Open WebUI в ней нет маршрута наружу.
+# В неё же входят MCP-серверы, ollama-gate и webui-tls (у них есть и default)
+networks:
+  webui:
+    internal: true

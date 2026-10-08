@@ -407,7 +407,7 @@ docker compose exec ollama-gate python -c "import requests; print(requests.get('
 docker compose exec ollama-gate python -c "import requests; print(requests.post('http://localhost:11435/api/pull', json={'model': 'x'}).status_code)"
 ```
 
-Должно быть `403` — отбил прокси, до шлюза запрос не дошёл.
+Должно быть `403` — отбил прокси (белый список), до шлюза запрос не дошёл.
 
 ### 4. Open WebUI запустился
 

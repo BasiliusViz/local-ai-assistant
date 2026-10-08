@@ -55,27 +55,38 @@ HOP_BY_HOP = {
 
 UPSTREAM = ""
 
-# Управление моделями на машине Ollama: скачать, удалить, собрать, выгрузить.
-# Через прокси не пускаем никогда: клиентам (Open WebUI, OASIS) нужно только
-# спрашивать модель, а у Open WebUI в админке есть кнопки pull и delete.
-# Закрыты ли эти пути на самом шлюзе — неизвестно, поэтому закрываем здесь
-BLOCKED_PREFIXES = (
-    "/api/pull",
-    "/api/push",
-    "/api/create",
-    "/api/copy",
-    "/api/delete",
-    "/api/blobs",
-)
+# Белый список: только то, что нужно клиентам, чтобы СПРАШИВАТЬ модель.
+# Всё остальное — управление моделями (pull, delete, create, blobs...),
+# будущие пути Ollama и служебные пути шлюза — не пускаем. Чёрный список
+# пропустил бы любой путь, о котором мы не знаем
+ALLOWED_PATHS = {
+    "/api/tags",
+    "/api/version",
+    "/api/ps",
+    "/api/show",
+    "/api/chat",
+    "/api/generate",
+    "/api/embed",
+    "/api/embeddings",
+}
+# OpenAI-совместимый API: только генерация, эмбеддинги и список моделей
+ALLOWED_PREFIXES = ("/v1/chat/", "/v1/completions", "/v1/embeddings", "/v1/models")
+
+# Тело запроса к модели — текст; больше этого — не наш клиент
+MAX_BODY = 20 * 1024 * 1024
+
+# Свой сеанс: без прокси из окружения (ключ не должен идти через
+# корпоративный прокси, Docker подставляет HTTP(S)_PROXY сам)
+SESSION = requests.Session()
+SESSION.trust_env = False
 
 
 def blocked(path: str) -> bool:
-    """Путь управления моделями — такой запрос дальше не идёт.
+    """Путь не из белого списка — дальше не идёт.
 
     Путь, записанный не в простейшем виде (%-кодирование, //, /./, /../,
     обратная косая), отбиваем целиком: шлюз или Ollama могут его
-    нормализовать, и `/api/%70ull` или `//api/pull` превратятся в pull в
-    обход списка. Нормальным клиентам такие пути не нужны.
+    нормализовать во что-то, чего нет в списке.
     """
     path = path.split("?", 1)[0].split("#", 1)[0]
     if (
@@ -84,8 +95,10 @@ def blocked(path: str) -> bool:
         or any(seg in (".", "..") for seg in path.split("/"))
     ):
         return True
-    path = path.lower().rstrip("/")
-    return any(path == p or path.startswith(p + "/") for p in BLOCKED_PREFIXES)
+    path = path.rstrip("/")
+    if path in ALLOWED_PATHS:
+        return False
+    return not any(path == p.rstrip("/") or path.startswith(p) for p in ALLOWED_PREFIXES)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -95,14 +108,30 @@ class Handler(BaseHTTPRequestHandler):
         """Свой формат: стандартный печатает адрес клиента, а он всегда один."""
         log.info("%s", fmt % args)
 
-    def _relay(self, method: str) -> None:
-        length = int(self.headers.get("Content-Length") or 0)
-        body = self.rfile.read(length) if length else None
+    def _reject(self, code: int, why: str) -> None:
+        """Отказ без чтения тела: соединение закрываем, чтобы непрочитанный
+        остаток не приняли за следующий запрос."""
+        self.close_connection = True
+        self.send_error(code, why)
 
+    def _relay(self, method: str) -> None:
+        # Сначала путь, потом тело: запрещённое не читаем вовсе
         if blocked(self.path):
-            log.warning("отклонён %s %s: управление моделями закрыто", method, self.path)
-            self.send_error(403, "model management is disabled by proxy")
+            log.warning("отклонён %s %s: путь не из белого списка", method, self.path)
+            self._reject(403, "path is not allowed by proxy")
             return
+        if self.headers.get("Transfer-Encoding"):
+            self._reject(411, "Content-Length required")
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._reject(400, "bad Content-Length")
+            return
+        if length < 0 or length > MAX_BODY:
+            self._reject(413, "body too large")
+            return
+        body = self.rfile.read(length) if length else None
 
         headers = {
             k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP
@@ -111,17 +140,21 @@ class Handler(BaseHTTPRequestHandler):
 
         url = f"{UPSTREAM}{self.path}"
         try:
-            upstream = requests.request(
+            # Без редиректов: при переходе на другой хост requests снимает
+            # только Authorization, а x-api-key ушёл бы чужому; а редирект на
+            # /api/pull обошёл бы белый список
+            upstream = SESSION.request(
                 method,
                 url,
                 data=body,
                 headers=headers,
                 stream=True,
                 timeout=600,
+                allow_redirects=False,
             )
         except requests.RequestException as e:
-            log.error("не дошло до %s: %s", url, e)
-            self.send_error(502, "upstream unreachable")
+            log.error("не дошло до %s: %s", self.path, type(e).__name__)
+            self._reject(502, "upstream unreachable")
             return
 
         self.send_response(upstream.status_code)
@@ -134,7 +167,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
         try:
-            for chunk in upstream.iter_content(chunk_size=8192):
+            # Байты как есть, без распаковки: Content-Encoding пересылается,
+            # и распакованное тело с пометкой gzip клиент не разобрал бы
+            for chunk in upstream.raw.stream(8192, decode_content=False):
                 if not chunk:
                     continue
                 self.wfile.write(f"{len(chunk):X}\r\n".encode())
@@ -144,6 +179,12 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             # Клиент ушёл, не дождавшись, — обычное дело, если прервали прогон
             log.debug("клиент закрыл соединение на %s", self.path)
+            self.close_connection = True
+        except Exception as e:  # обрыв со стороны шлюза посреди потока
+            log.error("поток с %s оборвался: %s", self.path, type(e).__name__)
+            self.close_connection = True
+        finally:
+            upstream.close()
 
     def do_GET(self):  # noqa: N802 - имена задаёт базовый класс
         self._relay("GET")
@@ -151,8 +192,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         self._relay("POST")
 
-    def do_DELETE(self):  # noqa: N802
-        self._relay("DELETE")
 
 
 def main() -> int:

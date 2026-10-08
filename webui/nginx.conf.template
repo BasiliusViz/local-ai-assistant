@@ -26,6 +26,8 @@ server {
     # открыть страницу даже через «всё равно перейти»
     add_header X-Content-Type-Options nosniff always;
     add_header Referrer-Policy no-referrer always;
+    # Чат не встраивается в чужие страницы (clickjacking)
+    add_header X-Frame-Options SAMEORIGIN always;
 
     # Загрузка файлов в Open WebUI выключена, но аватар и импорт чатов — мелочь
     client_max_body_size 20m;
@@ -37,7 +39,9 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        # Только реальный адрес: присланный клиентом X-Forwarded-For не дописываем,
+        # иначе он подменит IP в журнале и в ограничении попыток входа
+        proxy_set_header X-Forwarded-For   $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
 
         # Веб-сокеты: через них Open WebUI отдаёт ответ модели по мере генерации
