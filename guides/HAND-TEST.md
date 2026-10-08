@@ -429,21 +429,20 @@ docker stats --no-stream open-webui ollama-gate
 ./check-egress.sh --quiet --watch 600
 ```
 
-### 7. HTTPS
+### 7. Чат отвечает через nginx
+
+Режим `http` (сейчас):
 
 ```bash
-curl -sk -o /dev/null -w '%{http_code}
-' https://localhost/
-```
-
-Должно быть `200`. По HTTP — перенаправление на HTTPS:
-
-```bash
-curl -s -o /dev/null -w '%{http_code} %{redirect_url}
+curl -s -o /dev/null -w '%{http_code}
 ' http://localhost/
 ```
 
-Должно быть `301 https://...`. Порт 3000 больше не отвечает — так и задумано.
+Должно быть `200` (первый старт — минута-две, до этого `502`). Порт 3000
+больше не отвечает — так и задумано.
+
+Режим `https` (когда будет сертификат): `curl -sk ... https://localhost/` —
+`200`, а `http://localhost/` — `301 https://...`.
 
 ### 8. В браузере
 

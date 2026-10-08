@@ -255,9 +255,10 @@ services:
     environment:
       # Без постоянного ключа после пересоздания контейнера всех разлогинит
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-}
-      # Cookie входа только по HTTPS
-      - WEBUI_SESSION_COOKIE_SECURE=true
-      - WEBUI_AUTH_COOKIE_SECURE=true
+      # Cookie входа только по HTTPS. При WEBUI_MODE=http должно быть false,
+      # иначе браузер не сохранит вход
+      - WEBUI_SESSION_COOKIE_SECURE=${WEBUI_COOKIE_SECURE:-false}
+      - WEBUI_AUTH_COOKIE_SECURE=${WEBUI_COOKIE_SECURE:-false}
       # --- ничего не качать и никуда не ходить ---
       - OFFLINE_MODE=true
       - HF_HUB_OFFLINE=1
@@ -329,7 +330,8 @@ services:
       - "${WEBUI_HTTPS_PORT:-443}:443"
       - "${WEBUI_HTTP_PORT:-80}:80"
     volumes:
-      - ./webui/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      # http — временно, без сертификата; https — когда сертификат появится
+      - ./webui/nginx-${WEBUI_MODE:-http}.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ${WEBUI_CERT_DIR:-./data/webui-cert}:/etc/nginx/certs:ro
     environment:
       - WEBUI_HTTPS_PORT=${WEBUI_HTTPS_PORT:-443}

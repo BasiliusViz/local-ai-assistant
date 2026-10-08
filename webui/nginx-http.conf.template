@@ -1,0 +1,53 @@
+# HTTP перед Open WebUI — ВРЕМЕННО, пока нет сертификата (WEBUI_MODE=http).
+# Пароль и чаты идут по сети открытым текстом. Перейти на HTTPS: сертификат
+# в WEBUI_CERT_DIR, в .env WEBUI_MODE=https и WEBUI_COOKIE_SECURE=true,
+# затем docker compose --profile webui up -d open-webui webui-tls
+
+# Адрес open-webui ищем через DNS Docker при каждом запросе, а не на старте:
+# иначе nginx не запустится, пока open-webui ещё поднимается
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+# Версию nginx в ответах и страницах ошибок не показывать
+server_tokens off;
+
+server {
+    listen 80;
+    server_name _;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+    # Чат не встраивается в чужие страницы (clickjacking)
+    add_header X-Frame-Options SAMEORIGIN always;
+
+    client_max_body_size 20m;
+
+    location / {
+        set $upstream http://open-webui:8080;
+        proxy_pass $upstream;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        # Только реальный адрес: присланный клиентом X-Forwarded-For не дописываем,
+        # иначе он подменит IP в журнале и в ограничении попыток входа
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Forwarded-Proto http;
+
+        # Веб-сокеты: через них Open WebUI отдаёт ответ модели по мере генерации
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        # Поток не копить: иначе ответ появится только целиком
+        proxy_buffering off;
+        proxy_cache off;
+
+        # Модель с инструментами может думать минутами
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+}
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}

@@ -34,7 +34,7 @@
 | `cb-graph` | 8013 | граф кода релиза CB18.5, инструменты `cb_*` (`code/graph_server.py` поверх SQLite), карточки репозиториев — `cb_repos` (`code/repo_cards.py`); поиск по релизу — `cb_search` в `kb` |
 | `dojo` | 8012 | MCP: `dojo_findings`, `dojo_engagements`, `dojo_compare`, `dojo_release_notes`. Отдельный порт ради доступа: только AppSec |
 | `open-webui` | — | веб-чат: модель (через `ollama-gate`) + те же MCP по сети Docker; профиль `webui`, `guides/OPEN-WEBUI.md` |
-| `webui-tls` | 443 | профиль `webui`: nginx, HTTPS перед Open WebUI (`webui/nginx.conf.template`), 80 — редирект |
+| `webui-tls` | 80/443 | профиль `webui`: nginx перед Open WebUI; `WEBUI_MODE=http` (сейчас, без сертификата) или `https` (`webui/nginx-*.conf.template`) |
 | `ollama-gate` | — | профиль `webui`: `ollama_proxy.py` внутри compose, дописывает ключ шлюза, не пускает pull/delete/create |
 | `reranker` | 8081 | выключен, профиль `quality` |
 
