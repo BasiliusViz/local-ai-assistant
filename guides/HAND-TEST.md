@@ -42,7 +42,7 @@ for p in 8010 8011 8012 8013; do echo "== $p"; curl -s -X POST "http://localhost
 ```
 
 Должно быть:
-- `8010`: `kb_search, code_search, cb_search, jira_search`
+- `8010`: `kb_search, code_search, cb_search, jira_search, jira_query`
 - `8011`: `query_graph, get_node, get_neighbors, ...`
 - `8012`: `dojo_findings, dojo_engagements, dojo_compare, dojo_release_notes`
 - `8013`: `cb_query_graph, cb_get_node, cb_get_neighbors, ...` — с префиксом `cb_`.
@@ -114,6 +114,27 @@ docker compose exec kb python -m kb.jira_index /docs/jira --full
 ```bash
 docker compose exec kb python -c "from kb import jira_retriever as j; print(j.values('epic_name', limit=20))"
 ```
+
+### 6в. Jira живьём: jira_query (JQL, только GET)
+
+Индекс не нужен — запрос идёт прямо в Jira с токеном из `.env`. Включается
+`JIRA_LIVE=1` в `.env` и `docker compose up -d kb`. Посчитать
+открытые задачи в своих проектах — должно быть число, а не `error`:
+
+```bash
+docker compose exec kb python -c "from kb import jira_live as j; print(j.query('statusCategory != Done', count_only=True))"
+```
+
+В `jql` ответа — рамки: `project in (...)` из `JIRA_PROJECTS`, затем условие в
+скобках. Попытка выйти из рамок должна дать отказ, а не задачи:
+
+```bash
+docker compose exec kb python -c "from kb import jira_live as j; print(j.build_query('x = 1) OR (project = HR'))"
+```
+
+Ожидается `JiraLiveError: В JQL лишняя закрывающая скобка`. В Continue:
+«@jira сколько открытых багов в <проект>» — модель должна позвать
+`jira_query` с `count_only`, «@jira где обсуждали <тема>» — `jira_search`.
 
 ### 6б. Код релиза CB18.5 (граф и поиск отдельно от обычного кода)
 
@@ -234,6 +255,10 @@ docker compose exec kb python confluence/test_sync.py
 
 ```bash
 docker compose exec kb python -m kb.test_jira
+```
+
+```bash
+docker compose exec kb python -m kb.test_jira_live
 ```
 
 ```bash

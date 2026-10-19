@@ -29,7 +29,7 @@
 | Контейнер | Порт | Что даёт модели |
 |---|---|---|
 | `qdrant` | 6333 | векторная база: `knowledge` (документы, Jira, Dojo), `code` |
-| `kb` | 8010 | MCP: `kb_search` (документы), `code_search` (код), `jira_search` |
+| `kb` | 8010 | MCP: `kb_search` (документы), `code_search` (код), `jira_search` (индекс), `jira_query` (живая Jira по JQL, только GET, `kb/jira_live.py`) |
 | `code-graph` | 8011 | MCP Graphify: граф вызовов кода (кто вызывает, что сломается) |
 | `cb-graph` | 8013 | граф кода релиза CB18.5, инструменты `cb_*` (`code/graph_server.py` поверх SQLite), карточки репозиториев — `cb_repos` (`code/repo_cards.py`); поиск по релизу — `cb_search` в `kb` |
 | `dojo` | 8012 | MCP: `dojo_findings`, `dojo_engagements`, `dojo_compare`, `dojo_release_notes`. Отдельный порт ради доступа: только AppSec |
@@ -160,7 +160,7 @@ win_old/     бывший Windows-стенд сервера, не поддерж
 120 тыс. кусков, ссылки на страницы в ответах), DefectDojo (в том числе обзор
 по всем продуктам), код и граф, расширение запроса.
 
-Написано, но на живом стенде **не проверялось**: Jira, `repos/sync.py` на
+Написано, но на живом стенде **не проверялось**: Jira (индекс и `jira_query`), `repos/sync.py` на
 живых серверах, ветки DefectDojo (`dojo_compare.py`, живой API), релиз CB18.5
 (`cb_search`; `cb-graph` на SQLite развёрнут, в Continue не проверен; карточки `cb_repos` и
 Obsidian — только тесты, `guides/PLAN-CB-GRAPH.md`).

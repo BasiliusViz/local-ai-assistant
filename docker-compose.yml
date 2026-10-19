@@ -95,6 +95,9 @@ services:
       - JIRA_JQL=${JIRA_JQL:-}
       - JIRA_COMMENTS=${JIRA_COMMENTS:-1}
       - JIRA_FIELDS=${JIRA_FIELDS:-}
+      # Живые запросы модели по JQL (jira_query), только GET
+      - JIRA_LIVE=${JIRA_LIVE:-0}
+      - JIRA_LIVE_PROJECTS=${JIRA_LIVE_PROJECTS:-}
       - JIRA_OUT=/docs/jira
       # DefectDojo индексируется отсюда же (образ общий), а отвечает на
       # вопросы отдельный сервер dojo — см. ниже:

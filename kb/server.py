@@ -14,7 +14,7 @@ import sys
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
-from kb import code_retriever, config, jira_retriever
+from kb import code_retriever, config, jira_live, jira_retriever
 from kb.code_index import CB_COLLECTION, CODE_COLLECTION
 from kb.embedder import EmbedError
 from kb.jira_retriever import JiraSearchError
@@ -35,7 +35,8 @@ mcp = MCPServer(
     instructions=(
         "Поиск по внутренним данным компании на русском языке: документация "
         "(kb_search), исходный код (code_search), код релиза CB18.5 "
-        "(cb_search) и задачи Jira (jira_search). "
+        "(cb_search), задачи Jira: снимок и поиск по смыслу (jira_search), "
+        "живая Jira по JQL (jira_query). "
         "Инструменты вызываются только по явной просьбе, у каждого своё "
         "условие — оно описано в самом инструменте."
     ),
@@ -497,11 +498,118 @@ def jira_search(
     }
 
 
+@mcp.tool(
+    # openWorldHint: ходит в живую Jira, а не в свой индекс. Только GET
+    annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
+)
+def jira_query(
+    jql: str | None = None,
+    issue_key: str | None = None,
+    count_only: bool = False,
+    max_results: int = jira_live.DEFAULT_RESULTS,
+    response_format: str = "concise",
+) -> dict:
+    """ЖИВАЯ JIRA по JQL: точные выборки, подсчёт, статус прямо сейчас.
+
+    ВЫЗЫВАЙ ТОЛЬКО ЕСЛИ В СООБЩЕНИИ ЕСТЬ СЛОВО «jira» («@jira», «жира»,
+    «джира») — как и jira_search.
+
+    Чем отличается от jira_search. jira_search — снимок задач за последние
+    недели и поиск ПО СМЫСЛУ («где обсуждали похожее»). jira_query — запрос
+    в живую Jira: точные условия, без поиска по смыслу. Бери jira_query, когда:
+      - нужно ПОСЧИТАТЬ: «сколько багов Critical в DEVSEC» -> count_only=True
+      - нужен статус ПРЯМО СЕЙЧАС: «что с DEVSEC-412» -> issue_key="DEVSEC-412"
+      - задачи СТАРЫЕ, вне снимка: «что закрыли в DEVSEC в 2024»
+      - условие из нескольких точных полей: тип, приоритет, даты, версии
+      - jira_search ничего не нашёл, а задача точно должна быть
+    Для «где обсуждали X», «похожие проблемы» — jira_search, не этот.
+
+    Пиши только УСЛОВИЕ JQL: рамки проектов подставляются сами. Здесь ВСЕ
+    задачи проектов, без фильтра по команде и сроку, — в отличие от
+    jira_search. Примеры:
+      issuetype = Bug AND priority in (Critical, Blocker) AND statusCategory != Done
+      assignee = "i.ivanov" AND statusCategory != Done ORDER BY priority DESC
+      sprint in openSprints() AND project = DEVSEC
+      resolved >= "2024-01-01" AND resolved < "2025-01-01"
+      text ~ "импорт выписок"
+      fixVersion = "2.0" AND statusCategory = Done
+    Эпик ПО СМЫСЛУ («эпик про нейросети»): JQL ищет слова, а не смысл, поэтому
+      1) возьми список: issuetype = Epic AND statusCategory != Done
+         (если вопрос про старый — без statusCategory, max_results=50);
+      2) сам выбери подходящий по названию: «KK LLM v3» — это про нейросети;
+      3) его задачи: "Epic Link" = <номер эпика>.
+      Если эпиков больше, чем вернулось (total), сузь по project или
+      попробуй summary ~ "<слово>"; не нашёл — jira_search с epic=.
+    Подсказки:
+      - «не закрытые» — statusCategory != Done: названия статусов в проектах
+        разные, категория одна
+      - НЕ используй currentUser(): это учётка сервиса, а не тот, кто спросил
+      - исполнителя пиши логином; если знаешь только фамилию — сначала
+        jira_search с person, оттуда возьми логин
+      - месяцы в датах — заглавная M (-3M), строчная m — минуты
+      - функции — только встроенные (openSprints, membersOf, startOfMonth...);
+        issueFunction и функции плагинов не работают
+      - задачи указывай номером (DEVSEC-412), не числовым id
+      - если Jira вернула ошибку JQL — исправь условие по её тексту и позови снова
+
+    Args:
+        jql: условие JQL, можно с ORDER BY в конце. Пусто — последние
+            изменённые задачи
+        issue_key: номер одной задачи ("DEVSEC-412"): полная карточка с
+            описанием и последними комментариями. Тогда jql не нужен
+        count_only: True — вернуть только число задач под условие
+        max_results: сколько задач вернуть, по умолчанию 20, максимум 50
+        response_format: "concise" (по умолчанию) — номер, заголовок, статус,
+            исполнитель, приоритет, дата. "detailed" — плюс тип, автор, эпик,
+            спринты, версии, метки и начало описания
+
+    Returns:
+        total — сколько задач под условие всего (может быть больше, чем
+        вернулось), issues — задачи, jql — что на самом деле ушло в Jira.
+    """
+    if not jira_live.available():
+        return {
+            "error": (
+                "Живые запросы к Jira не настроены: нужны JIRA_URL, JIRA_TOKEN "
+                "(или JIRA_USER), JIRA_PROJECTS и JIRA_LIVE=1 в .env. "
+                "Пока можно искать по индексу — jira_search."
+            )
+        }
+    try:
+        result = jira_live.query(
+            jql=jql or "",
+            issue_key=issue_key,
+            count_only=count_only,
+            max_results=max_results,
+            detailed=response_format == "detailed",
+        )
+    except jira_live.JiraLiveError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Запрос к Jira не удался: {e}"}
+
+    if count_only:
+        return result
+    if not result["issues"]:
+        result["hint"] = (
+            "Под это условие задач нет. Проверь имена полей и значения — "
+            "или попробуй jira_search, если вопрос по смыслу."
+        )
+        return result
+    result["citation_instruction"] = (
+        "Для каждой задачи указывай номер и ссылку. Данные живые, на момент "
+        "запроса. Если total больше, чем вернулось, — скажи об этом."
+    )
+    return result
+
+
 def main() -> None:
     sources = known_values("source") or ["(база пуста)"]
     log.info("База знаний: коллекция %s, источники: %s", config.COLLECTION, sources)
     if jira_retriever.available():
         log.info("Задачи Jira: проекты %s", jira_retriever.values("project"))
+    if jira_live.available():
+        log.info("Живая Jira (jira_query): %s", ", ".join(jira_live.projects()))
     log.info("MCP streamable-http на http://%s:%s/mcp", HOST, PORT)
     # stateless_http: без него сервер выдаёт session-id и требует его в каждом
     # запросе, а Continue его не сохраняет — отсюда "Session not found" после
