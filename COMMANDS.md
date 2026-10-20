@@ -9,7 +9,7 @@
 git pull && git log --oneline -1
 ```
 
-Ждём: `97e5490 jira/sync.py: все эпики проектов...`
+Ждём: `COMMANDS.md: ...` (или новее), в `git log` ниже него — `97e5490 jira/sync.py: все эпики...`
 
 ## 2. Включить живую Jira
 
