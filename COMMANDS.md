@@ -26,32 +26,11 @@ JIRA_LIVE=1
 ## 2а. Как в вашей Jira называется тип эпика
 
 Jira сама скажет: у эпика заполнено поле «Epic Name», у обычной задачи —
-«Epic Link». Команда смотрит, какой тип у таких задач в ваших проектах
-(только GET, токен из `.env` на экран не выводится, работает и на старом образе).
-Блок копировать целиком, до `EOF` включительно:
+«Epic Link». Скрипт смотрит, какой тип у таких задач в ваших проектах
+(только GET, токен на экран не выводится, работает и на старом образе):
 
 ```bash
-docker compose exec -T kb python - <<'EOF'
-import os, sys, collections
-sys.path.insert(0, "jira")
-from sync import Client
-e = os.environ.get
-c = Client(e("JIRA_URL"), token=e("JIRA_TOKEN", ""), user=e("JIRA_USER", ""), password=e("JIRA_PASSWORD", ""))
-fields = c.get("/rest/api/2/field")
-def find(suffix):
-    return [f["id"] for f in fields if (f.get("schema") or {}).get("custom", "").endswith(suffix)]
-name_f, link_f = find("gh-epic-label"), find("gh-epic-link")
-print("Поле Epic Name:", name_f, " поле Epic Link:", link_f)
-pr = e("JIRA_PROJECTS", "").strip()
-scope = f" AND project in ({pr})" if pr else ""
-if name_f:
-    r = c.get("/rest/api/2/search", jql=f"cf[{name_f[0].split('_')[1]}] is not EMPTY{scope}", maxResults=100, fields="issuetype")
-    print("1) Тип задач с Epic Name:", collections.Counter(i["fields"]["issuetype"]["name"] for i in r["issues"]).most_common())
-if link_f:
-    r = c.get("/rest/api/2/search", jql=f"cf[{link_f[0].split('_')[1]}] is not EMPTY{scope}", maxResults=50, fields=link_f[0])
-    keys = list({i["fields"][link_f[0]] for i in r["issues"] if i["fields"].get(link_f[0])})[:15]
-    print("2) Тип задач, на которые ссылается Epic Link:", collections.Counter(c.get(f"/rest/api/2/issue/{k}", fields="issuetype")["fields"]["issuetype"]["name"] for k in keys).most_common())
-EOF
+docker compose exec -T kb python - < jira/epic_type.py
 ```
 
 Ждём, например: `1) Тип задач с Epic Name: [('Эпик', 100)]` — это имя и есть.
