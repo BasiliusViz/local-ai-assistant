@@ -7,6 +7,13 @@
   - JIRA_SINCE — глубина истории. Задачи, которые не трогали год, в поиске
     в основном шумят, а в индексации стоят дороже всего.
 Это и есть граница: что не попало в выгрузку, того нет и в базе.
+
+Исключение — эпики. Эпик — общая карточка проекта: обычно старый (вне окна
+JIRA_SINCE) и без исполнителя из команды, поэтому обычной выборкой не
+ловится, а спрашивают про него как раз по смыслу («эпик про миграцию на
+новый IAM»). Поэтому после обычной выгрузки отдельным проходом приезжают ВСЕ
+эпики проектов JIRA_PROJECTS — без окна, команды и JIRA_JQL. Задачи эпика
+потом берёт живой jira_query ("Epic Link" = номер).
 Аутентификации на портах пока нет, поэтому ограничивать надо не доступ к
 индексу, а его содержимое.
 
@@ -35,6 +42,7 @@
     JIRA_TEAM_GROUP имя группы Jira — то же самое, но составом рулит Jira
     JIRA_SINCE      глубина истории: 30d, 6M или 2026-08-01
     JIRA_JQL        дополнительное условие, если нужно что-то своё
+    JIRA_EPIC_TYPE  как в Jira называется тип «эпик» (по умолчанию Epic)
     JIRA_COMMENTS   1 — тянуть комментарии (по умолчанию), 0 — только описания
     JIRA_FIELDS     свои поля через запятую: «Стрим заказчика,customfield_12345».
                     Эпик и спринт находятся сами. Какие поля есть — --fields
@@ -722,6 +730,22 @@ def show_fields(client: "Client", jql: str, fmap: dict, sample: int = 100) -> in
     return 0
 
 
+def epics_jql(projects: list[str], epic_type: str, since: str | None) -> str:
+    """Условие выборки эпиков: все эпики проектов, без окна, команды и JIRA_JQL.
+
+    JIRA_JQL сюда тоже не идёт: в нём обычно ещё одно сужение по команде или
+    компоненту, а эпик — общая карточка проекта. since — только для
+    инкрементальности (своя отметка у эпиков в .sync_state.json).
+    """
+    quoted = ", ".join(f'"{p}"' for p in projects)
+    # Имя типа из .env — в кавычках JQL, поэтому \ и " экранируем
+    safe_type = epic_type.replace("\\", "\\\\").replace('"', '\\"')
+    parts = [f"project in ({quoted})", f'issuetype = "{safe_type}"']
+    if since:
+        parts.append(f'updated >= "{since}"')
+    return " AND ".join(parts)
+
+
 def load_state(path: Path) -> dict:
     if path.exists():
         try:
@@ -731,7 +755,14 @@ def load_state(path: Path) -> dict:
     return {}
 
 
-def prune(client: Client, out_dir: Path, jql: str, dry_run: bool, force: bool) -> int:
+def prune(
+    client: Client,
+    out_dir: Path,
+    jql: str,
+    dry_run: bool,
+    force: bool,
+    epics: str = "",
+) -> int:
     """Убрать с диска задачи, вышедшие из охвата.
 
     Обычная выгрузка берёт только изменившееся с прошлого раза и потому не
@@ -743,10 +774,17 @@ def prune(client: Client, out_dir: Path, jql: str, dry_run: bool, force: bool) -
 
     Запускать раз в сутки: полный проход обычному прогону не нужен, а чаще
     смысла нет — устаревшая задача провисит в поиске не дольше суток.
+
+    epics — условие выборки эпиков (epics_jql): они в охвате всегда, даже
+    вне окна и без исполнителя из команды, и удалять их нельзя.
     """
     print(f"\nСверка с Jira: {jql}")
+    if epics:
+        print(f"Эпики: {epics}")
     try:
         in_scope = set(client.keys(jql))
+        if epics:
+            in_scope |= set(client.keys(epics))
     except JiraError as e:
         # Недочитанный список нельзя использовать для удаления: всё, что не
         # успело прийти, выглядело бы вышедшим из охвата
@@ -833,6 +871,7 @@ def main() -> int:
     team_group = os.getenv("JIRA_TEAM_GROUP", "").strip()
     since_env = (args.since or os.getenv("JIRA_SINCE", "")).strip()
     extra_jql = os.getenv("JIRA_JQL", "").strip()
+    epic_type = os.getenv("JIRA_EPIC_TYPE", "").strip() or "Epic"
     with_comments = os.getenv("JIRA_COMMENTS", "1").strip() != "0"
     wanted_fields = [
         x.strip() for x in os.getenv("JIRA_FIELDS", "").split(",") if x.strip()
@@ -921,8 +960,17 @@ def main() -> int:
                 )
                 # Обе цифры сразу: видно, насколько сузила выборка команды.
                 # Если они совпали, условие не сработало — например, в JIRA_TEAM
-                # указаны отображаемые имена вместо логинов
-                print(f"    {project:12} задач всего: {whole:6}   к выгрузке: {mine}")
+                # указаны отображаемые имена вместо логинов. Эпики едут все,
+                # поверх выборки команды. Типа с таким именем нет — Jira
+                # отвечает ошибкой, а не нулём: это не «проект недоступен»
+                try:
+                    epics = client.count(epics_jql([project], epic_type, None))
+                except JiraError:
+                    epics = f"ошибка — проверьте JIRA_EPIC_TYPE={epic_type}"
+                print(
+                    f"    {project:12} задач всего: {whole:6}   к выгрузке: {mine:6}"
+                    f"   эпиков: {epics}"
+                )
             except JiraError as e:
                 print(f"    {project:12} недоступен.\n{e}")
                 return 1
@@ -935,36 +983,56 @@ def main() -> int:
             build_jql(projects, team, window, extra_jql, None),
             dry_run=args.dry_run,
             force=args.force_prune,
+            epics=epics_jql(projects, epic_type, None),
         )
 
     state_path = out_dir / ".sync_state.json"
     state = {} if args.full else load_state(state_path)
     since = None if args.full else state.get("synced_until")
+    # У эпиков своя отметка: в первый прогон после появления прохода эпиков
+    # synced_until уже есть, и по ней старые эпики не приехали бы никогда
+    epics_since = None if args.full else state.get("epics_synced_until")
 
     # Момент начала прогона с запасом назад: пока идёт выгрузка, кто-то
     # правит задачи, и без запаса такие правки провалятся между прогонами
     started = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M")
 
     jql = build_jql(projects, team, window, extra_jql, since)
+    ejql = epics_jql(projects, epic_type, epics_since)
     print(f"\nJQL: {jql}")
+    print(f"Эпики: {ejql}")
 
     try:
         total = client.count(jql)
     except JiraError as e:
         print(f"\n{e}")
         return 1
+    # Эпики — дополнение: их ошибка (чаще всего неверный JIRA_EPIC_TYPE) не
+    # должна останавливать обычную выгрузку. Отметка эпиков тогда не двигается
+    epics_ok = True
+    try:
+        epics_total = client.count(ejql)
+    except JiraError as e:
+        print(f"    [!] Эпики пропущены — проверьте JIRA_EPIC_TYPE={epic_type}: {e}")
+        epics_ok, epics_total = False, 0
 
     if since:
         print(f"Изменилось с {since}: {total}")
     else:
         print(f"Задач к выгрузке: {total}")
+    if epics_since:
+        print(f"Эпиков изменилось с {epics_since}: {epics_total}")
+    else:
+        print(f"Эпиков к выгрузке (все, без окна и команды): {epics_total}")
 
-    if not total:
+    if not total and not epics_total:
         print("\nНечего выгружать — с прошлого раза ничего не менялось.")
         return 0
 
     stats = {"новых": 0, "обновлено": 0, "ошибок": 0}
-    processed = 0
+    # Номера, уже записанные в этом прогоне: эпик, попавший и в выборку
+    # команды, второй раз не пишем и не считаем
+    seen: set[str] = set()
 
     # Названия эпиков помним между прогонами: иначе каждый прогон заново
     # спрашивал бы про одни и те же эпики. --full сбрасывает — эпик могли
@@ -1026,14 +1094,23 @@ def main() -> int:
                 json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-    batch: list[dict] = []
-    try:
-        for issue in client.search(jql, with_comments, extra_fields=extra_ids):
-            if args.limit and processed >= args.limit:
+    def run(query: str, count: int, dump: bool) -> int:
+        """Один проход выгрузки. Возвращает, сколько задач записано.
+
+        --limit общий на оба прохода: считаем по seen, а не по проходу.
+        """
+        processed = 0
+        batch: list[dict] = []
+        for issue in client.search(query, with_comments, extra_fields=extra_ids):
+            if args.limit and len(seen) >= args.limit:
                 break
+            key = issue.get("key", "")
+            if key in seen:
+                continue
+            seen.add(key)
             processed += 1
 
-            if args.dump_raw and processed == 1:
+            if dump and args.dump_raw and processed == 1:
                 Path(args.dump_raw).write_text(client.last_raw, encoding="utf-8")
                 print(f"\nСырой ответ сохранён: {args.dump_raw}")
 
@@ -1043,15 +1120,31 @@ def main() -> int:
                 batch = []
 
             if processed % 100 == 0:
-                print(f"    ...{processed} из {total}")
+                print(f"    ...{processed} из {count}")
         flush(batch)
+        return processed
+
+    epics_done = 0
+    try:
+        if total:
+            run(jql, total, dump=True)
     except JiraError as e:
         print(f"\nВыгрузка прервана: {e}")
         return 1
+    try:
+        if epics_total:
+            print("\nЭпики (все, без окна и команды):")
+            epics_done = run(ejql, epics_total, dump=not total)
+    except JiraError as e:
+        # Обычная выгрузка уже записана — её отметку сохраняем, эпики
+        # догрузятся в следующий прогон со старой отметки
+        print(f"\n[!] Выгрузка эпиков прервана: {e}")
+        epics_ok = False
 
     print("\nИтог:")
     for name, value in stats.items():
         print(f"    {name:12} {value}")
+    print(f"    эпиков отдельным проходом: {epics_done}")
 
     if not args.dry_run:
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1062,6 +1155,13 @@ def main() -> int:
             json.dumps(
                 {
                     "synced_until": started,
+                    # С --limit эпики приехали не все: старая отметка,
+                    # иначе недогруженные старые эпики не приедут никогда
+                    "epics_synced_until": (
+                        started
+                        if epics_ok and not args.limit
+                        else state.get("epics_synced_until")
+                    ),
                     "synced_at": datetime.now().isoformat(),
                     "projects": projects,
                 },

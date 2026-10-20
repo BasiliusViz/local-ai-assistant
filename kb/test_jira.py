@@ -40,6 +40,15 @@ class IndexTest(unittest.TestCase):
                      "Стрим заказчика: Розница", "Исправить в версиях: 2.0"):
             self.assertIn(part, head)
 
+    def test_old_epic_without_assignee(self):
+        # Эпик из отдельного прохода: старый, без исполнителя и спринта
+        epic = {"key": "DEV-1", "summary": "Миграция на новый IAM",
+                "project": "DEV", "type": "Epic", "status": "Open",
+                "epic": "DEV-1", "epic_name": "IAM", "description": "зачем"}
+        chunks = jira_index.issue_chunks(epic)
+        self.assertIn("Это эпик «IAM»", chunks[0]["text"])
+        self.assertIn("Миграция на новый IAM", chunks[0]["text"])
+
     def test_field_values(self):
         vals = jira_index.field_values(ISSUE)
         for v in ("Стрим заказчика=Розница", "Компоненты=api", "Тип=История",

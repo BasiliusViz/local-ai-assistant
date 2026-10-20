@@ -119,5 +119,67 @@ class NormalizeTest(unittest.TestCase):
         self.assertEqual((rec["epic"], rec["sprints"], rec["fields"]), ("", [], {}))
 
 
+class EpicsTest(unittest.TestCase):
+    """Эпики едут все: без окна JIRA_SINCE, команды и JIRA_JQL."""
+
+    def test_epics_jql_without_window_team_and_extra(self):
+        q = sync.epics_jql(["DEV", "OPS"], "Epic", None)
+        self.assertEqual(q, 'project in ("DEV", "OPS") AND issuetype = "Epic"')
+
+    def test_epics_jql_incremental(self):
+        q = sync.epics_jql(["DEV"], "Эпик", "2026-10-01 10:00")
+        self.assertIn('issuetype = "Эпик"', q)
+        self.assertIn('updated >= "2026-10-01 10:00"', q)
+
+    def test_epic_type_quotes_escaped(self):
+        q = sync.epics_jql(["DEV"], 'Epic" OR project = X OR "a\\', None)
+        self.assertIn('issuetype = "Epic\\" OR project = X OR \\"a\\\\"', q)
+
+
+class FakeClient:
+    """Отвечает на keys() по JQL: эпики — по issuetype, остальное — задачи."""
+
+    def __init__(self, tasks, epics, fail_epics=False):
+        self.tasks, self.epics, self.fail_epics = tasks, epics, fail_epics
+
+    def keys(self, jql):
+        if "issuetype" in jql:
+            if self.fail_epics:
+                raise sync.JiraError("нет связи")
+            return iter(self.epics)
+        return iter(self.tasks)
+
+
+class PruneTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        (self.dir / "DEV").mkdir()
+        for key in ("DEV-1", "DEV-2", "DEV-3"):
+            (self.dir / "DEV" / f"{key}.json").write_text("{}", encoding="utf-8")
+        self.epics = sync.epics_jql(["DEV"], "Epic", None)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def left(self):
+        return sorted(p.stem for p in self.dir.rglob("*.json"))
+
+    def test_old_epic_outside_window_is_kept(self):
+        # DEV-1 — эпик вне окна, DEV-3 вышла из охвата
+        client = FakeClient(tasks=["DEV-2"], epics=["DEV-1"])
+        rc = sync.prune(client, self.dir, "project in (DEV)", False, True, self.epics)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.left(), ["DEV-1", "DEV-2"])
+
+    def test_epics_list_failed_nothing_deleted(self):
+        client = FakeClient(tasks=["DEV-2"], epics=[], fail_epics=True)
+        rc = sync.prune(client, self.dir, "project in (DEV)", False, True, self.epics)
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.left(), ["DEV-1", "DEV-2", "DEV-3"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -115,6 +115,36 @@ docker compose exec kb python -m kb.jira_index /docs/jira --full
 docker compose exec kb python -c "from kb import jira_retriever as j; print(j.values('epic_name', limit=20))"
 ```
 
+**Все эпики — отдельным проходом, без окна и команды.** Нужен `--build kb`
+(выгрузка лежит в образе). В `--check` у каждого проекта третья цифра —
+`эпиков: N`; `эпиков: ошибка` (или `0` у живого проекта) — тип эпика
+называется иначе, поправить `JIRA_EPIC_TYPE` в `.env` и
+`docker compose up -d kb`. Обычная выгрузка при этом идёт, эпики пропускаются
+с `[!]`:
+
+```bash
+docker compose exec kb python jira/sync.py --check
+docker compose exec kb python jira/sync.py --dry-run | grep -E "^Эпик|эпиков отдельным"
+```
+
+- строка `Эпиков к выгрузке (все, без окна и команды): N` — первый прогон
+  после обновления берёт все эпики разом; дальше — `Эпиков изменилось с ...`;
+- `эпиков отдельным проходом: N` в итоге (эпики, попавшие и в выборку
+  команды, второй раз не считаются).
+
+Выгрузить, проиндексировать, сверить — `--prune` не должен удалять эпики вне
+окна (`вне охвата: 0` сразу после выгрузки):
+
+```bash
+docker compose exec kb python jira/sync.py
+docker compose exec kb python -m kb.jira_index /docs/jira
+docker compose exec kb python jira/sync.py --prune --dry-run
+```
+
+В Continue: «jira: найди эпик про <тема старого эпика, которого никто не
+трогал больше месяца>» — `jira_search` находит его по смыслу. Затем
+«jira query: задачи этого эпика» — `jira_query` с `"Epic Link" = <номер>`.
+
 ### 6в. Jira живьём: jira_query (JQL, только GET)
 
 Индекс не нужен — запрос идёт прямо в Jira с токеном из `.env`. Включается
