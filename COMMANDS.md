@@ -1,82 +1,127 @@
 # Команды для сервера
 
 Задача: проверить живую Jira (`jira_query`) и выгрузку эпиков. 20.10.2026.
-Всё на сервере, в папке проекта. Шаги по порядку, каждый блок копировать целиком.
-Вывод каждого шага — присылать в чат.
+Всё на сервере, в папке проекта. Одна команда — один шаг, строго по порядку.
+Не совпало с «Ждём» — остановиться и прислать вывод.
 
-## Уже сделано
+Уже сделано: тип эпика в Jira — `Epic`, в `.env` для него ничего не пишем.
 
-- [x] Тип эпика в Jira — `Epic`, в `.env` для него ничего не пишем
-- [ ] `JIRA_LIVE=1` в `.env` — проверьте, что строка есть (шаг 2)
+---
 
-## 1. Подтянуть код
+### 1
 
 ```bash
 git pull
 ```
 
-## 2. Проверить .env
+Ждём: `Fast-forward` или `Already up to date`.
+
+### 2
 
 ```bash
-grep -E "^JIRA_(URL|PROJECTS|LIVE)=" .env; grep -q "^JIRA_TOKEN=." .env && echo "JIRA_TOKEN задан" || echo "JIRA_TOKEN ПУСТОЙ"
+grep -E "^JIRA_(URL|PROJECTS|LIVE)=" .env
 ```
 
-Ждём: `JIRA_URL` и `JIRA_PROJECTS` заполнены, `JIRA_LIVE=1`, `JIRA_TOKEN задан`.
-Нет `JIRA_LIVE=1` — открыть `nano .env`, дописать строку `JIRA_LIVE=1`, сохранить.
+Ждём: три строки, `JIRA_URL` и `JIRA_PROJECTS` заполнены, `JIRA_LIVE=1`.
+Нет строки `JIRA_LIVE=1` — шаг 3, иначе сразу шаг 4.
 
-## 3. Собрать и запустить контейнеры
+### 3
 
-Собираем по одному образу — так не бывает ошибки `tar ... closed pipe`.
-Сначала `kb`:
+```bash
+echo "JIRA_LIVE=1" >> .env
+```
+
+Ничего не выводит — это нормально.
+
+### 4
+
+```bash
+grep -q "^JIRA_TOKEN=." .env && echo "JIRA_TOKEN задан" || echo "JIRA_TOKEN ПУСТОЙ"
+```
+
+Ждём: `JIRA_TOKEN задан`.
+
+### 5
 
 ```bash
 COMPOSE_BAKE=false docker compose build kb
 ```
 
-Ждём в конце: `Built` или `naming to ... done`. Упало — прислать последние
-строки и не идти дальше (разбор — в конце файла).
+Ждём в конце: `Built` или `naming to ... done`. Упало — в конец файла, «Если шаг 5 упал».
 
-Затем остальные два и запуск всех трёх:
+### 6
 
 ```bash
-COMPOSE_BAKE=false docker compose build dojo && COMPOSE_BAKE=false docker compose build cb-graph && docker compose up -d --force-recreate kb dojo cb-graph && docker compose ps kb dojo cb-graph
+COMPOSE_BAKE=false docker compose build dojo
 ```
 
-Ждём: три строки `kb`, `dojo`, `cb-graph`, у всех `Up`.
+Ждём: то же, `Built`.
 
-## 4. Живая Jira: считает задачи
+### 7
+
+```bash
+COMPOSE_BAKE=false docker compose build cb-graph
+```
+
+Ждём: то же, `Built`.
+
+### 8
+
+```bash
+docker compose up -d --force-recreate kb dojo cb-graph
+```
+
+Ждём: `Started` у трёх контейнеров.
+
+### 9
+
+```bash
+docker compose ps kb dojo cb-graph
+```
+
+Ждём: у всех трёх `Up`.
+
+### 10
 
 ```bash
 docker compose exec kb python -c "from kb import jira_live as j; print(j.query('statusCategory != Done', count_only=True))"
 ```
 
-Ждём: число, а не `error`.
+Ждём: число открытых задач, а не `error`.
 
-## 5. Живая Jira: не выходит за свои проекты
+### 11
 
 ```bash
 docker compose exec kb python -c "from kb import jira_live as j; print(j.build_query('x = 1) OR (project = HR'))"
 ```
 
-Ждём: ошибку `JiraLiveError: В JQL лишняя закрывающая скобка` — это правильно.
+Ждём: ошибку `JiraLiveError: В JQL лишняя закрывающая скобка` — так и должно быть.
 
-## 6. Эпики: сколько найдено
+### 12
 
 ```bash
 docker compose exec kb python jira/sync.py --check
 ```
 
-Ждём: у каждого проекта `эпиков: N`, где N больше нуля.
+Ждём: у каждого проекта `эпиков: N`, N больше нуля.
 
-## 7. Эпики: выгрузить и проиндексировать
-
-Может идти долго — первый раз берутся все эпики.
+### 13
 
 ```bash
-docker compose exec kb python jira/sync.py && docker compose exec kb python -m kb.jira_index /docs/jira
+docker compose exec kb python jira/sync.py
 ```
 
-Проверка, что ничего лишнего не удалится:
+Может идти долго: первый раз выгружаются все эпики.
+
+### 14
+
+```bash
+docker compose exec kb python -m kb.jira_index /docs/jira
+```
+
+Ждём: в конце итог индексации без ошибок.
+
+### 15
 
 ```bash
 docker compose exec kb python jira/sync.py --prune --dry-run
@@ -86,17 +131,34 @@ docker compose exec kb python jira/sync.py --prune --dry-run
 
 ---
 
-## Если шаг 3 упал
+## Если шаг 5 упал
 
-Только если сборка `kb` не прошла. Место на диске, лишние файлы в папке
-проекта, файлы без прав на чтение:
-
-```bash
-df -h . /var/lib/docker; git status --short | head -20; find . -path ./qdrant -prune -o -path ./docs -prune -o -path ./cb -prune -o -path ./code -prune -o -path ./tei -prune -o ! -readable -print 2>/dev/null | head -20
-```
-
-Прислать вывод. Если в конце есть файлы — вернуть права и собрать заново:
+### А
 
 ```bash
-sudo chown -R $(id -u):$(id -g) kb jira confluence tools && chmod -R a+rX kb jira confluence tools && docker builder prune -f && COMPOSE_BAKE=false docker compose build kb
+df -h . /var/lib/docker
 ```
+
+Ждём: ни у одной строки не `100%`.
+
+### Б
+
+```bash
+find kb jira confluence tools ! -readable -print
+```
+
+Ждём: пусто. Вывел файлы — шаг В, иначе прислать вывод шага 5.
+
+### В
+
+```bash
+sudo chown -R $(id -u):$(id -g) kb jira confluence tools
+```
+
+### Г
+
+```bash
+docker builder prune -f
+```
+
+Затем снова шаг 5.
