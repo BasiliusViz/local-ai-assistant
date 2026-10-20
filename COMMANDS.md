@@ -23,6 +23,21 @@ nano .env
 JIRA_LIVE=1
 ```
 
+## 2а. Как в вашей Jira называется тип эпика
+
+Список типов задач из Jira (токен из `.env`, на экран не выводится; работает и на старом образе):
+
+```bash
+docker compose exec kb python -c "import os,sys; sys.path.insert(0,'jira'); from sync import Client; e=os.environ.get; c=Client(e('JIRA_URL'),token=e('JIRA_TOKEN',''),user=e('JIRA_USER',''),password=e('JIRA_PASSWORD','')); print(sorted({t['name'] for t in c.get('/rest/api/2/issuetype')}))"
+```
+
+В списке есть `Epic` — в `.env` ничего не писать. Есть `Эпик` (или другое имя
+эпика) — дописать в `.env` ровно как в списке:
+
+```
+JIRA_EPIC_TYPE=Эпик
+```
+
 ## 3. Пересобрать контейнеры
 
 ```bash
