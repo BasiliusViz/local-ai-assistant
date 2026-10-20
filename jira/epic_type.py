@@ -41,6 +41,7 @@ def main() -> None:
         print("Полей эпика нет — эпики в этой Jira устроены иначе, прислать вывод")
         return
 
+    found: collections.Counter = collections.Counter()
     projects = e("JIRA_PROJECTS", "").strip()
     scope = f" AND project in ({projects})" if projects else ""
 
@@ -55,6 +56,7 @@ def main() -> None:
         types = collections.Counter(
             i["fields"]["issuetype"]["name"] for i in r["issues"]
         )
+        found.update(types)
         print("1) Тип задач с Epic Name:", types.most_common())
 
     if link_f:
@@ -72,9 +74,20 @@ def main() -> None:
             c.get(f"/rest/api/2/issue/{k}", fields="issuetype")["fields"]["issuetype"]["name"]
             for k in keys
         )
+        found.update(types)
         print("2) Тип задач, на которые ссылается Epic Link:", types.most_common())
 
-    print("Имя из 1) или 2) — в .env: JIRA_EPIC_TYPE=<имя> (Epic — ничего не писать)")
+    print()
+    if not found:
+        print("ИТОГ: эпиков в проектах JIRA_PROJECTS не нашлось — прислать вывод")
+    elif len(found) > 1:
+        print("ИТОГ: несколько типов", found.most_common(), "— прислать вывод")
+    else:
+        name = next(iter(found))
+        if name == "Epic":
+            print("ИТОГ: тип эпика — Epic, как по умолчанию. В .env ничего не писать")
+        else:
+            print(f"ИТОГ: тип эпика — {name}. Дописать в .env: JIRA_EPIC_TYPE={name}")
 
 
 if __name__ == "__main__":
