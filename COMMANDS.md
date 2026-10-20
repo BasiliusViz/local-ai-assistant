@@ -33,28 +33,37 @@ docker compose up -d --build --force-recreate kb dojo cb-graph && docker compose
 
 ## 3а. Если сборка упала: «can't add file ... to tar: io: read/write on closed pipe»
 
-Права и место на диске (у файла должно быть `rw-r--r--`, свободно — не 100%):
+Обычно причина — compose собирает `kb` и `dojo` (и `ollama-gate`) одновременно
+из одной папки. Сначала просто собрать один `kb`, без параллели:
 
 ```bash
-ls -l kb/jira_retriever.py && df -h . && find kb jira -type f ! -perm -o=r
+COMPOSE_BAKE=false docker compose build --progress=plain kb 2>&1 | tail -30
 ```
 
-Если `find` вывел файлы — вернуть права на чтение:
+Прошло — сразу к блоку «остальные и запуск» ниже. Упало — прислать вывод и
+выполнить диагностику. Место (не должно быть 100%), чужие файлы в папке
+проекта (чего нет в git), файлы без прав на чтение:
 
 ```bash
-sudo chmod -R a+rX kb jira && sudo chown -R $(id -u):$(id -g) kb jira
+df -h . /var/lib/docker; git status --short | head -20; du -sh $(git status --short --ignored | awk '{print $2}' | grep -vE '^(qdrant|docs|tei|cb|cb-excluded|code|data|corpus|win_old|guides|\.git)/') 2>/dev/null | sort -h | tail -10; find . -path ./qdrant -prune -o -path ./docs -prune -o -path ./cb -prune -o -path ./code -prune -o -path ./tei -prune -o ! -readable -print 2>/dev/null | head -20
 ```
 
-Собирать по одному образу, без параллели (настоящая ошибка будет видна):
+Если последняя команда вывела файлы — вернуть права (только на код проекта):
 
 ```bash
-docker compose build --progress=plain kb 2>&1 | tail -30
+sudo chown -R $(id -u):$(id -g) kb jira confluence tools && chmod -R a+rX kb jira confluence tools
+```
+
+Очистить кэш сборщика и собрать заново:
+
+```bash
+docker builder prune -f && COMPOSE_BAKE=false docker compose build --progress=plain kb 2>&1 | tail -30
 ```
 
 Если прошло — остальные и запуск:
 
 ```bash
-docker compose build dojo && docker compose build cb-graph && docker compose up -d --force-recreate kb dojo cb-graph && docker compose ps kb dojo cb-graph
+COMPOSE_BAKE=false docker compose build dojo && COMPOSE_BAKE=false docker compose build cb-graph && docker compose up -d --force-recreate kb dojo cb-graph && docker compose ps kb dojo cb-graph
 ```
 
 ## 4. Живая Jira: счёт открытых задач
