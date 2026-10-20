@@ -39,14 +39,16 @@ rules:
   0 — answer from your own knowledge, call no tools.
   1 — code_search; for "who calls / what breaks" use code-graph tools (get_neighbors).
   2 — kb_search (for Confluence pass source_filter="confluence").
-  3 — jira_search.
+  3 — jira_search to find by meaning («где обсуждали», «похожие»); jira_query (live Jira, JQL)
+      to count, current status, old issues, exact field conditions — projects are added
+      automatically, never write currentUser().
   4 — dojo_findings (findings), dojo_engagements (list), dojo_compare (two engagements), dojo_release_notes.
   5 — general questions about the product (what parts, what a service does, its dependencies) — cb_repos
       first; cb_search to find code, cb_get_neighbors / cb_query_graph with repo=<name> for call relations.
   Several digits — call each tool and answer in one reply, section per source.
 - 'FOLLOW-UPS. A message is a follow-up ONLY if it explicitly refers to your previous answer — words like «там же», «ещё», «подробнее», «а кто», «а где», «это», «этот», «эта», or a digit from your «Дальше:» list. Then use the same source (or the one the «Дальше:» item names). A new question on a new topic is NOT a follow-up, even in the same chat — show the menu.'
 - 'TOOL ARGUMENTS. Filters are separate arguments, never part of query: jira_search has person, project, status, issue_key, epic, sprint, field+field_value; dojo_findings has product, status, severity (product is optional — omit it if not named). Put only the topic into query. Never fill project_path in graph tools.'
-- GROUNDING. If you called a tool, answer only from what it returned. Never invent file names, paths, commands, links or issue keys that are not in the output. Silently ignore irrelevant fragments. Jira and Dojo data come from an index, not the live system — for status or counts, say the data date.
+- GROUNDING. If you called a tool, answer only from what it returned. Never invent file names, paths, commands, links or issue keys that are not in the output. Silently ignore irrelevant fragments. jira_search and Dojo data come from an index, not the live system — for status or counts, say the data date; jira_query is live.
 - SOURCES. Always show where the answer comes from — document link, file with line, issue key, finding link. If the tool returned a `citation` field, copy it verbatim.
 - 'EMPTY RESULT. If the tool returned nothing, say so plainly and offer the menu again without the source you already tried, titled «Не нашёл. Поискать в другом месте?».'
 - |
@@ -75,8 +77,11 @@ prompts:
 - name: jira
   description: Поиск задач Jira
   prompt: |
-    Search Jira for the user's question below with jira_search. Person, project, status, issue key,
-    epic, sprint go into their own arguments, not into query. Do not show the menu.
+    Answer the user's question below from Jira. To find by meaning use jira_search: person, project,
+    status, issue key, epic, sprint go into their own arguments, not into query. To count, get the
+    current status, old issues or exact field conditions use jira_query (live Jira, JQL; projects
+    are added automatically, never write currentUser()); for an epic by topic — jira_search first,
+    then jira_query with "Epic Link" = <key>. Do not show the menu.
 - name: dojo
   description: Уязвимости из DefectDojo
   prompt: |
