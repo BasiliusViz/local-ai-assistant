@@ -31,6 +31,32 @@ docker compose up -d --build --force-recreate kb dojo cb-graph && docker compose
 
 Ждём: все три `Up`, созданы только что.
 
+## 3а. Если сборка упала: «can't add file ... to tar: io: read/write on closed pipe»
+
+Права и место на диске (у файла должно быть `rw-r--r--`, свободно — не 100%):
+
+```bash
+ls -l kb/jira_retriever.py && df -h . && find kb jira -type f ! -perm -o=r
+```
+
+Если `find` вывел файлы — вернуть права на чтение:
+
+```bash
+sudo chmod -R a+rX kb jira && sudo chown -R $(id -u):$(id -g) kb jira
+```
+
+Собирать по одному образу, без параллели (настоящая ошибка будет видна):
+
+```bash
+docker compose build --progress=plain kb 2>&1 | tail -30
+```
+
+Если прошло — остальные и запуск:
+
+```bash
+docker compose build dojo && docker compose build cb-graph && docker compose up -d --force-recreate kb dojo cb-graph && docker compose ps kb dojo cb-graph
+```
+
 ## 4. Живая Jira: счёт открытых задач
 
 ```bash
